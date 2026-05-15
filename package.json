@@ -1,7 +1,7 @@
 {
   "name": "pi-bar",
-  "version": "0.3.0",
-  "description": "Never accidentally run Opus on a typo. Pi footer/statusline showing active model, thinking level, and context usage.",
+  "version": "0.3.22",
+  "description": "Pi footer/statusline showing active model, thinking level, context pressure, live TLDR, and extension statuses.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -13,7 +13,8 @@
     "model",
     "thinking",
     "context",
-    "context-window"
+    "context-window",
+    "tldr"
   ],
   "license": "MIT",
   "repository": {
@@ -31,10 +32,14 @@
     "LICENSE"
   ],
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
     "@earendil-works/pi-coding-agent": {
       "optional": true
     },
@@ -46,6 +51,6 @@
     "extensions": [
       "./extensions/status-footer.ts"
     ],
-    "image": "https://cdn.jsdelivr.net/npm/pi-bar@0.3.0/assets/screenshot.png"
+    "image": "https://cdn.jsdelivr.net/npm/pi-bar@0.3.22/assets/screenshot.png"
   }
 }
