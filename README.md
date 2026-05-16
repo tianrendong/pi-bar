@@ -9,9 +9,9 @@
 claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Inspecting package structure  ❯  plan:active
 ```
 
-![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.24/assets/screenshot-green.png)
-![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.24/assets/screenshot-yellow.png)
-![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.24/assets/screenshot-red.png)
+![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.25/assets/screenshot-green.png)
+![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.25/assets/screenshot-yellow.png)
+![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.25/assets/screenshot-red.png)
 
 ## Why use it?
 

@@ -43,7 +43,11 @@ type SerializedStatusFilter =
 type TldrActivityType =
 	| "user_message"
 	| "assistant_update"
+	| "tool_input_start"
+	| "tool_input_update"
+	| "tool_input_end"
 	| "tool_call"
+	| "tool_execution_update"
 	| "tool_result"
 	| "assistant_final"
 	| "assistant_failure";
@@ -54,17 +58,36 @@ type TldrActivity = {
 	displayPriority: TldrDisplayPriority;
 	text: string;
 	toolCallId?: string;
+	// Identifies a continuous streaming run (tool input arg streaming, or tool
+	// execution output streaming). Activities sharing a group represent updates
+	// to the same task; staleness handling treats them as one stream.
+	progressGroup?: string;
 };
 type TldrCheckpoint = {
 	activityIndex: number;
+	activityType: TldrActivityType;
 	displayPriority: TldrDisplayPriority;
 	text: string;
+	progressGroup?: string;
 };
 type TldrCheckpointJob = {
 	activityIndex: number;
+	activityType: TldrActivityType;
 	displayPriority: TldrDisplayPriority;
 	runId: number;
+	progressGroup?: string;
 };
+
+// Activities that represent ongoing streaming work. These are treated
+// specially: their checkpoints can render even when newer same-stream activity
+// exists, and the display refresh slows to a 10s cadence for repeat renders so
+// the footer does not become a model-call ticker.
+function isToolProgressActivity(activityType: TldrActivityType): boolean {
+	return (
+		activityType === "tool_input_update" ||
+		activityType === "tool_execution_update"
+	);
+}
 type TldrModelPreference = { provider: string; id: string };
 type FastModelAuth = {
 	model: Parameters<typeof complete>[0];
@@ -88,6 +111,12 @@ const TLDR_MAX_TOKENS = 120;
 const TLDR_REQUEST_TIMEOUT_MS = 2_000;
 const TLDR_DISPLAY_UPDATE_INTERVAL_MS = 1_200;
 const TLDR_TARGET_SUMMARY_CHARS = 60;
+// While rendering successive progress checkpoints from the same stream (e.g.
+// long bash output), slow the display refresh dramatically. The TLDR text
+// barely changes between adjacent chunks; refreshing every 1.2s would burn API
+// calls and footer renders for noise.
+const TOOL_PROGRESS_DISPLAY_UPDATE_INTERVAL_MS = 10_000;
+const MAX_TOOL_PROGRESS_PARTIAL_CHARS = 280;
 // Burst debouncing on the generation side: coalesce rapid-fire activities into
 // one model call. Quiet window catches short bursts; max wait surfaces progress
 // during continuous activity.
@@ -448,13 +477,58 @@ function extractTextContent(content: readonly unknown[] | undefined): string | u
 	return compacted.length > 0 ? compacted : undefined;
 }
 
+type ToolInputAssistantEvent =
+	| { type: "toolcall_start"; contentIndex: number; partial: unknown }
+	| {
+			type: "toolcall_delta";
+			contentIndex: number;
+			delta: string;
+			partial: unknown;
+		}
+	| {
+			type: "toolcall_end";
+			contentIndex: number;
+			toolCall: { id: string; name: string; arguments?: unknown };
+			partial: unknown;
+		};
+
+function toolCallAtContentIndex(
+	partial: unknown,
+	contentIndex: number,
+): { id: string; name: string; arguments?: unknown } | undefined {
+	if (!partial || typeof partial !== "object") return undefined;
+	const content = (partial as { content?: unknown }).content;
+	if (!Array.isArray(content)) return undefined;
+	const block = content[contentIndex];
+	if (!block || typeof block !== "object") return undefined;
+	const record = block as Record<string, unknown>;
+	if (record.type !== "toolCall") return undefined;
+	if (typeof record.id !== "string" || typeof record.name !== "string") {
+		return undefined;
+	}
+	return {
+		id: record.id,
+		name: record.name,
+		arguments: record.arguments,
+	};
+}
+
 class TldrFactCollector {
 	private nextIndex = 1;
 	private readonly activities: TldrActivity[] = [];
+	// Streaming tool inputs (`toolcall_start/delta/end` from message_update)
+	// arrive before the final tool id is available; content index is the best
+	// stable anchor until the id appears.
+	private readonly activeToolInputAnchors = new Map<string, string>();
 
 	resetConversation(): void {
 		this.nextIndex = 1;
 		this.activities.splice(0);
+		this.activeToolInputAnchors.clear();
+	}
+
+	latestActivity(): TldrActivity | undefined {
+		return this.activities[this.activities.length - 1];
 	}
 
 	recordUserMessage(prompt: string): TldrActivity {
@@ -486,6 +560,79 @@ class TldrFactCollector {
 		);
 	}
 
+	// Stage 1: tool input streaming. The model is writing tool name + args; pi
+	// surfaces this via `assistantMessageEvent` on `message_update` with
+	// toolcall_start / toolcall_delta / toolcall_end. Useful when args are long
+	// (big edits, structured plans) and the user wants visible progress before
+	// the actual tool execution starts.
+	recordToolInputActivity(
+		event: ToolInputAssistantEvent | undefined,
+	): TldrActivity | undefined {
+		if (!event) return undefined;
+
+		switch (event.type) {
+			case "toolcall_start": {
+				const toolCall = toolCallAtContentIndex(event.partial, event.contentIndex);
+				const toolName = toolCall?.name ?? "unknown";
+				const anchorKey = toolCall?.id ?? `content:${event.contentIndex}`;
+				const anchorText = `tool input: ${toolName}`;
+				this.activeToolInputAnchors.set(anchorKey, anchorText);
+				return this.addActivity(
+					"tool_input_start",
+					"normal",
+					anchorText,
+					toolCall?.id,
+				);
+			}
+			case "toolcall_delta": {
+				const toolCall = toolCallAtContentIndex(event.partial, event.contentIndex);
+				const anchorKey = toolCall?.id ?? `content:${event.contentIndex}`;
+				const anchorText =
+					this.activeToolInputAnchors.get(anchorKey) ??
+					`tool input: ${toolCall?.name ?? "unknown"}`;
+
+				// Repeated delta updates for the same call collapse into the latest
+				// snapshot. Otherwise long arg streams would push out useful facts.
+				const last = this.activities[this.activities.length - 1];
+				if (
+					last?.activityType === "tool_input_update" &&
+					last.progressGroup === `tool-input:${anchorKey}`
+				) {
+					this.activities.pop();
+				}
+
+				const argSnapshot = compactValue(toolCall?.arguments, 200);
+				const chunk = event.delta
+					? `latest: ${truncateText(compactText(event.delta), 120)}`
+					: undefined;
+				const update = [argSnapshot, chunk].filter(Boolean).join("; ");
+
+				return this.addActivity(
+					"tool_input_update",
+					"normal",
+					`${anchorText}; ${update || "streaming"}`,
+					toolCall?.id,
+					`tool-input:${anchorKey}`,
+				);
+			}
+			case "toolcall_end": {
+				const anchorKey = event.toolCall.id;
+				const anchorText =
+					this.activeToolInputAnchors.get(anchorKey) ??
+					`tool input: ${event.toolCall.name}`;
+				this.activeToolInputAnchors.delete(anchorKey);
+
+				const args = compactValue(event.toolCall.arguments, 240);
+				return this.addActivity(
+					"tool_input_end",
+					"normal",
+					args ? `${anchorText} completed; ${args}` : `${anchorText} completed`,
+					event.toolCall.id,
+				);
+			}
+		}
+	}
+
 	recordToolCall(event: {
 		toolName: string;
 		input?: Record<string, unknown>;
@@ -496,6 +643,45 @@ class TldrFactCollector {
 			"normal",
 			`tool: ${compactToolInput(event.toolName, event.input)}`,
 			event.toolCallId,
+		);
+	}
+
+	// Stage 2: tool execution streaming. The host is running the tool and
+	// emitting partial output. Tagged with progressGroup so adjacent chunks of
+	// the same execution are treated as one continuous stream.
+	recordToolExecutionUpdate(event: {
+		toolCallId: string;
+		toolName: string;
+		partialResult: unknown;
+	}): TldrActivity {
+		const partialText =
+			extractTextContent(
+				Array.isArray((event.partialResult as { content?: unknown })?.content)
+					? ((event.partialResult as { content: unknown[] }).content as unknown[])
+					: undefined,
+			) ??
+			compactValue(event.partialResult, MAX_TOOL_PROGRESS_PARTIAL_CHARS) ??
+			"streaming";
+
+		const progressGroup = `tool-execution:${event.toolCallId}`;
+
+		// Adjacent execution-update activities for the same stream collapse into
+		// the latest. The retained activity list stays bounded and the model sees
+		// one current snapshot of in-progress output.
+		const last = this.activities[this.activities.length - 1];
+		if (
+			last?.activityType === "tool_execution_update" &&
+			last.progressGroup === progressGroup
+		) {
+			this.activities.pop();
+		}
+
+		return this.addActivity(
+			"tool_execution_update",
+			"normal",
+			`running ${event.toolName}; ${tailText(partialText, MAX_TOOL_PROGRESS_PARTIAL_CHARS)}`,
+			event.toolCallId,
+			progressGroup,
 		);
 	}
 
@@ -517,15 +703,24 @@ class TldrFactCollector {
 		const status = isError ? "error" : "ok";
 		const tool = compactToolInput(event.toolName, event.input);
 
-		// Result fact subsumes the prior tool_call fact for the same call. Drop the
-		// matching tool_call so the model sees one combined fact instead of two.
+		// The completed result fact subsumes all in-progress facts for the same
+		// call: the original tool_call, any tool_input_* lifecycle facts, and any
+		// tool_execution_update progress. The model only needs the final outcome.
 		if (event.toolCallId) {
-			const idx = this.activities.findIndex(
-				(activity) =>
-					activity.activityType === "tool_call" &&
-					activity.toolCallId === event.toolCallId,
-			);
-			if (idx !== -1) this.activities.splice(idx, 1);
+			const id = event.toolCallId;
+			for (let i = this.activities.length - 1; i >= 0; i--) {
+				const activity = this.activities[i];
+				if (activity.toolCallId !== id) continue;
+				if (
+					activity.activityType === "tool_call" ||
+					activity.activityType === "tool_input_start" ||
+					activity.activityType === "tool_input_update" ||
+					activity.activityType === "tool_input_end" ||
+					activity.activityType === "tool_execution_update"
+				) {
+					this.activities.splice(i, 1);
+				}
+			}
 		}
 
 		return this.addActivity(
@@ -593,13 +788,15 @@ class TldrFactCollector {
 		displayPriority: TldrDisplayPriority,
 		text: string,
 		toolCallId?: string,
+		progressGroup?: string,
 	): TldrActivity {
-		const activity = {
+		const activity: TldrActivity = {
 			index: this.nextIndex,
 			activityType,
 			displayPriority,
 			text: truncateText(text, MAX_ACTIVITY_TEXT_CHARS),
 			toolCallId,
+			progressGroup,
 		};
 		this.nextIndex++;
 		this.activities.push(activity);
@@ -631,6 +828,9 @@ class FooterTldrEngine {
 	private pendingNormalCheckpoint?: TldrCheckpointJob;
 	private normalCheckpointTimer?: ReturnType<typeof setTimeout>;
 	private normalCheckpointBurstStartedAt?: number;
+	// Last progress stream that produced a rendered checkpoint. Used to slow the
+	// display refresh for repeat renders from the same stream.
+	private lastRenderedProgressGroup?: string;
 
 	constructor(private readonly requestRender: () => void) {}
 
@@ -655,7 +855,22 @@ class FooterTldrEngine {
 		this.enqueue(ctx, this.facts.recordUserMessage(prompt));
 	}
 
-	recordAssistantUpdate(ctx: ExtensionContext, message: unknown): void {
+	recordAssistantUpdate(
+		ctx: ExtensionContext,
+		message: unknown,
+		assistantMessageEvent?: unknown,
+	): void {
+		// Tool input streaming hides inside `message_update`. Drain that signal
+		// first; only if no tool-input fact was produced does this look like a
+		// plain assistant text update worth recording.
+		const toolInputActivity = this.facts.recordToolInputActivity(
+			normalizeToolInputEvent(assistantMessageEvent),
+		);
+		if (toolInputActivity) {
+			this.enqueue(ctx, toolInputActivity);
+			return;
+		}
+
 		const activity = this.facts.recordAssistantUpdate(message);
 		if (activity) this.enqueue(ctx, activity);
 	}
@@ -665,6 +880,17 @@ class FooterTldrEngine {
 		event: { toolName: string; input?: Record<string, unknown>; toolCallId?: string },
 	): void {
 		this.enqueue(ctx, this.facts.recordToolCall(event));
+	}
+
+	recordToolExecutionUpdate(
+		ctx: ExtensionContext,
+		event: {
+			toolCallId: string;
+			toolName: string;
+			partialResult: unknown;
+		},
+	): void {
+		this.enqueue(ctx, this.facts.recordToolExecutionUpdate(event));
 	}
 
 	recordToolResult(
@@ -701,6 +927,7 @@ class FooterTldrEngine {
 		this.lastDisplayAt = Number.NEGATIVE_INFINITY;
 		this.acceptedCheckpoints.splice(0);
 		this.pendingDisplayCheckpoint = undefined;
+		this.lastRenderedProgressGroup = undefined;
 		this.currentText = null;
 		this.requestRender();
 	}
@@ -769,10 +996,12 @@ class FooterTldrEngine {
 
 	private enqueue(ctx: ExtensionContext, activity: TldrActivity): void {
 		if (!ctx.hasUI) return;
-		const job = {
+		const job: TldrCheckpointJob = {
 			activityIndex: activity.index,
+			activityType: activity.activityType,
 			displayPriority: activity.displayPriority,
 			runId: this.runId,
+			progressGroup: activity.progressGroup,
 		};
 
 		if (job.displayPriority === "immediate") {
@@ -806,9 +1035,13 @@ class FooterTldrEngine {
 		this.scheduleNormalCheckpoint(ctx, job);
 	}
 
-	private clearPendingDisplay(): void {
+	private clearDisplayTimer(): void {
 		if (this.displayTimer) clearTimeout(this.displayTimer);
 		this.displayTimer = undefined;
+	}
+
+	private clearPendingDisplay(): void {
+		this.clearDisplayTimer();
 		this.pendingDisplayCheckpoint = undefined;
 	}
 
@@ -866,10 +1099,12 @@ class FooterTldrEngine {
 			const rawText = extractTextContent(response.content) ?? "";
 			const text = sanitizeTldrText(rawText);
 			if (!text) return;
-			const checkpoint = {
+			const checkpoint: TldrCheckpoint = {
 				activityIndex: job.activityIndex,
+				activityType: job.activityType,
 				displayPriority: job.displayPriority,
 				text,
+				progressGroup: job.progressGroup,
 			};
 			this.acceptCheckpoint(checkpoint);
 			this.considerDisplayingCheckpoint(ctx, checkpoint);
@@ -901,7 +1136,7 @@ class FooterTldrEngine {
 		checkpoint: TldrCheckpoint,
 	): void {
 		if (checkpoint.activityIndex <= this.lastRenderedActivityIndex) return;
-		if (checkpoint.activityIndex !== this.facts.latestActivityIndex()) return;
+		if (this.shouldDropStaleCheckpoint(checkpoint)) return;
 
 		if (checkpoint.displayPriority !== "normal" || !this.lastRenderedText) {
 			this.clearPendingDisplay();
@@ -909,22 +1144,66 @@ class FooterTldrEngine {
 			return;
 		}
 
+		const displayIntervalMs = this.displayIntervalFor(checkpoint);
 		const elapsedMs = performance.now() - this.lastDisplayAt;
-		if (elapsedMs >= TLDR_DISPLAY_UPDATE_INTERVAL_MS) {
+		if (elapsedMs >= displayIntervalMs) {
 			this.clearPendingDisplay();
 			this.renderCheckpoint(checkpoint);
 			return;
 		}
 
 		this.pendingDisplayCheckpoint = checkpoint;
-		if (this.displayTimer) return;
+		// Recompute the timer for each newly accepted pending checkpoint. A long
+		// 10s progress-stream debounce should not block a subsequent ordinary
+		// update that wants to render at the normal 1.2s cadence.
+		this.clearDisplayTimer();
 		this.displayTimer = setTimeout(() => {
 			this.displayTimer = undefined;
 			const pending = this.pendingDisplayCheckpoint;
 			this.pendingDisplayCheckpoint = undefined;
-			if (!pending || pending.activityIndex !== this.facts.latestActivityIndex()) return;
+			if (!pending) return;
+			if (this.shouldDropStaleCheckpoint(pending)) return;
 			this.renderCheckpoint(pending);
-		}, TLDR_DISPLAY_UPDATE_INTERVAL_MS - elapsedMs);
+		}, displayIntervalMs - elapsedMs);
+	}
+
+	// A model call for chunk N may finish after chunk N+1 has been recorded.
+	// Most stale checkpoints are dropped, but progress streams are an exception:
+	// while the same stream is still active, a slightly-behind TLDR is still
+	// useful, and dropping it would leave the footer stuck on older text.
+	private shouldDropStaleCheckpoint(checkpoint: TldrCheckpoint): boolean {
+		if (checkpoint.activityIndex === this.facts.latestActivityIndex()) {
+			return false;
+		}
+
+		// Boundary checkpoints (user_message, assistant_final, etc.) must stay
+		// latest-only. A stale prompt-start or final TLDR would describe the wrong
+		// turn entirely.
+		if (checkpoint.displayPriority !== "normal") return true;
+
+		if (!isToolProgressActivity(checkpoint.activityType)) return true;
+		if (!checkpoint.progressGroup) return true;
+
+		const latestActivity = this.facts.latestActivity();
+		return !(
+			latestActivity &&
+			latestActivity.index > checkpoint.activityIndex &&
+			latestActivity.activityType === checkpoint.activityType &&
+			latestActivity.progressGroup === checkpoint.progressGroup
+		);
+	}
+
+	private displayIntervalFor(checkpoint: TldrCheckpoint): number {
+		if (!isToolProgressActivity(checkpoint.activityType)) {
+			return TLDR_DISPLAY_UPDATE_INTERVAL_MS;
+		}
+		// First render from a new progress group uses the normal cadence so the
+		// user sees the stream's first TLDR quickly. Subsequent renders for the
+		// same group slow down: the model output barely changes between chunks.
+		return checkpoint.progressGroup &&
+			checkpoint.progressGroup === this.lastRenderedProgressGroup
+			? TOOL_PROGRESS_DISPLAY_UPDATE_INTERVAL_MS
+			: TLDR_DISPLAY_UPDATE_INTERVAL_MS;
 	}
 
 	private renderCheckpoint(checkpoint: TldrCheckpoint): void {
@@ -933,6 +1212,9 @@ class FooterTldrEngine {
 		this.lastRenderedActivityIndex = checkpoint.activityIndex;
 		this.lastRenderedText = checkpoint.text;
 		this.lastDisplayAt = performance.now();
+		this.lastRenderedProgressGroup = isToolProgressActivity(checkpoint.activityType)
+			? checkpoint.progressGroup
+			: undefined;
 		this.currentText = checkpoint.text;
 		this.requestRender();
 	}
@@ -999,6 +1281,50 @@ function previousCheckpointLines(checkpoints: readonly TldrCheckpoint[]): string
 
 function formatRawActivity(activity: TldrActivity): string {
 	return `- ${activity.text}`;
+}
+
+// Narrows the unknown `assistantMessageEvent` from `message_update` to the
+// three tool-input streaming variants. Other event shapes (text_start, etc.)
+// produce undefined, signalling "no tool input fact to record".
+function normalizeToolInputEvent(value: unknown): ToolInputAssistantEvent | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const record = value as Record<string, unknown>;
+	const type = record.type;
+	if (type !== "toolcall_start" && type !== "toolcall_delta" && type !== "toolcall_end") {
+		return undefined;
+	}
+	if (typeof record.contentIndex !== "number") return undefined;
+
+	if (type === "toolcall_delta") {
+		return {
+			type,
+			contentIndex: record.contentIndex,
+			delta: typeof record.delta === "string" ? record.delta : "",
+			partial: record.partial,
+		};
+	}
+	if (type === "toolcall_end") {
+		const toolCall = record.toolCall;
+		if (
+			!toolCall ||
+			typeof toolCall !== "object" ||
+			typeof (toolCall as Record<string, unknown>).id !== "string" ||
+			typeof (toolCall as Record<string, unknown>).name !== "string"
+		) {
+			return undefined;
+		}
+		return {
+			type,
+			contentIndex: record.contentIndex,
+			toolCall: toolCall as { id: string; name: string; arguments?: unknown },
+			partial: record.partial,
+		};
+	}
+	return {
+		type,
+		contentIndex: record.contentIndex,
+		partial: record.partial,
+	};
 }
 
 // Strips ANSI/CSI/OSC/DCS/SOS/PM/APC escape sequences from model output before
@@ -1418,10 +1744,17 @@ export default function (pi: ExtensionAPI) {
 		tldr.recordUserMessage(ctx, event.prompt);
 	});
 	pi.on("message_update", async (event, ctx) => {
-		tldr.recordAssistantUpdate(ctx, event.message);
+		tldr.recordAssistantUpdate(
+			ctx,
+			event.message,
+			(event as { assistantMessageEvent?: unknown }).assistantMessageEvent,
+		);
 	});
 	pi.on("tool_call", async (event, ctx) => {
 		tldr.recordToolCall(ctx, event);
+	});
+	pi.on("tool_execution_update", async (event, ctx) => {
+		tldr.recordToolExecutionUpdate(ctx, event);
 	});
 	pi.on("tool_result", async (event, ctx) => {
 		tldr.recordToolResult(ctx, event);
