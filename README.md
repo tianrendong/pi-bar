@@ -9,9 +9,9 @@
 claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active
 ```
 
-![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.33/assets/screenshot-green.png)
-![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.33/assets/screenshot-yellow.png)
-![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.33/assets/screenshot-red.png)
+![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.34/assets/screenshot-green.png)
+![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.34/assets/screenshot-yellow.png)
+![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.34/assets/screenshot-red.png)
 
 ## Why use it?
 
@@ -37,13 +37,13 @@ If pi is already running after install, reload resources:
 
 ## Customization
 
-pi-bar works out of the box. Run `/bar` inside pi to choose which footer segments are shown:
+pi-bar works out of the box. Run `/bar` inside pi to choose which footer segments and extension statuses are shown:
 
 ```text
 /bar
 ```
 
-Toggle `Model`, `Thinking level`, `Context usage`, `Progress update`, and `Extension statuses` between `shown` and `hidden`. You can also use commands:
+Toggle `Model`, `Thinking level`, `Context usage`, `Progress update`, and `Extension statuses` between `shown` and `hidden`. If other extensions have published status badges, `/bar` also shows fine-grained `Status: <key>` rows plus a `New extension statuses` default. You can also use commands:
 
 ```text
 /bar segments list
@@ -75,7 +75,7 @@ Or in pi settings: `bar.progressModel`. Otherwise pi-bar picks a fast model you 
 
 ### Configure extension statuses
 
-Other pi extensions can publish small status badges. Pi-bar collects them into the `extensions` segment. Run `/bar status` inside pi to pick which ones to show:
+Other pi extensions can publish small status badges. Pi-bar collects them into the `extensions` segment. Run `/bar` or `/bar status` inside pi to pick which ones to show:
 
 ```text
 /bar status
