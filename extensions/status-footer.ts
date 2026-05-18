@@ -14,7 +14,7 @@
  *   PI_BAR_SHOW           comma-separated list of segments to show
  *   PI_BAR_THRESHOLDS     warning,danger context-usage percentages
  *   PI_BAR_PROGRESS_MODEL provider/id for the progress update model
- *   PI_BAR_CONFIG         override the persisted status-filter config path
+ *   PI_BAR_CONFIG         override the persisted pi-bar config path
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -42,6 +42,10 @@ type StatusFilter =
 type SerializedStatusFilter =
 	| { mode: "all"; hidden: string[] }
 	| { mode: "only"; shown: string[] };
+type GlobalBarConfig = {
+	statusFilter?: SerializedStatusFilter;
+	segments?: SegmentName[];
+};
 type ProgressActivityType =
 	| "user_message"
 	| "assistant_update"
@@ -110,6 +114,20 @@ const DEFAULT_SEGMENTS: SegmentName[] = [
 	"progress",
 	"extensions",
 ];
+const ALL_SEGMENTS: readonly SegmentName[] = [
+	"model",
+	"thinking",
+	"context",
+	"progress",
+	"extensions",
+];
+const SEGMENT_LABELS: Record<SegmentName, string> = {
+	model: "Model",
+	thinking: "Thinking level",
+	context: "Context usage",
+	progress: "Progress update",
+	extensions: "Extension statuses",
+};
 const DEFAULT_WARNING_THRESHOLD = 70;
 const DEFAULT_ERROR_THRESHOLD = 90;
 
@@ -166,6 +184,10 @@ function contextColor(
 	return "success";
 }
 
+function isSegmentName(value: string): value is SegmentName {
+	return (ALL_SEGMENTS as readonly string[]).includes(value);
+}
+
 function parseSegments(): SegmentName[] {
 	const raw = process.env.PI_BAR_SHOW;
 	if (!raw) return DEFAULT_SEGMENTS;
@@ -173,9 +195,7 @@ function parseSegments(): SegmentName[] {
 	const requested = raw
 		.split(",")
 		.map((segment) => segment.trim().toLowerCase())
-		.filter((segment): segment is SegmentName =>
-			["model", "thinking", "context", "progress", "extensions"].includes(segment),
-		);
+		.filter(isSegmentName);
 
 	return requested.length > 0 ? requested : DEFAULT_SEGMENTS;
 }
@@ -1523,6 +1543,18 @@ function serializeStatusFilter(filter: StatusFilter): SerializedStatusFilter {
 	return { mode: "all", hidden: Array.from(filter.hidden).sort() };
 }
 
+function serializeSegments(segments: readonly SegmentName[]): SegmentName[] {
+	return ALL_SEGMENTS.filter((segment) => segments.includes(segment));
+}
+
+function parseSerializedSegments(value: unknown): SegmentName[] | null {
+	if (!Array.isArray(value)) return null;
+	const segments = value.filter(
+		(segment): segment is SegmentName => typeof segment === "string" && isSegmentName(segment),
+	);
+	return serializeSegments(segments);
+}
+
 function parseSerializedStatusFilter(value: unknown): StatusFilter | null {
 	if (!value || typeof value !== "object") return null;
 	const data = value as Partial<SerializedStatusFilter>;
@@ -1543,6 +1575,18 @@ function splitStatusKeys(raw: string): string[] {
 		.filter(Boolean);
 }
 
+function splitSegmentNames(raw: string): SegmentName[] {
+	return raw
+		.split(/[\s,]+/)
+		.map((segment) => segment.trim().toLowerCase())
+		.filter(isSegmentName);
+}
+
+function describeSegments(segments: readonly SegmentName[]): string {
+	if (segments.length === 0) return "showing none";
+	return `showing: ${segments.map((segment) => SEGMENT_LABELS[segment]).join(", ")}`;
+}
+
 function describeStatusFilter(filter: StatusFilter): string {
 	if (filter.mode === "only") {
 		const shown = Array.from(filter.shown).sort();
@@ -1553,27 +1597,43 @@ function describeStatusFilter(filter: StatusFilter): string {
 	return hidden.length > 0 ? `showing all except: ${hidden.join(", ")}` : "showing all";
 }
 
-function readGlobalStatusFilter(): StatusFilter | null {
+function readGlobalConfig(): GlobalBarConfig {
 	try {
-		const data = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as {
-			statusFilter?: unknown;
+		const data = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Record<string, unknown>;
+		const statusFilter = parseSerializedStatusFilter(data.statusFilter ?? data);
+		return {
+			statusFilter: statusFilter ? serializeStatusFilter(statusFilter) : undefined,
+			segments: parseSerializedSegments(data.segments) ?? undefined,
 		};
-		return parseSerializedStatusFilter(data.statusFilter ?? data);
 	} catch {
-		return null;
+		return {};
 	}
 }
 
-function writeGlobalStatusFilter(filter: StatusFilter): void {
-	const data = JSON.stringify(
-		{ statusFilter: serializeStatusFilter(filter) },
-		null,
-		2,
-	);
+function readGlobalStatusFilter(): StatusFilter | null {
+	return parseSerializedStatusFilter(readGlobalConfig().statusFilter);
+}
+
+function readGlobalSegments(): SegmentName[] | null {
+	return process.env.PI_BAR_SHOW ? parseSegments() : readGlobalConfig().segments ?? null;
+}
+
+function writeGlobalConfig(config: GlobalBarConfig): void {
+	const data = JSON.stringify(config, null, 2);
 	mkdirSync(dirname(CONFIG_PATH), { recursive: true });
 	const tmpPath = `${CONFIG_PATH}.${process.pid}.tmp`;
 	writeFileSync(tmpPath, `${data}\n`, "utf8");
 	renameSync(tmpPath, CONFIG_PATH);
+}
+
+function writeGlobalStatusFilter(filter: StatusFilter): void {
+	const existing = readGlobalConfig();
+	writeGlobalConfig({ ...existing, statusFilter: serializeStatusFilter(filter) });
+}
+
+function writeGlobalSegments(segments: readonly SegmentName[]): void {
+	const existing = readGlobalConfig();
+	writeGlobalConfig({ ...existing, segments: serializeSegments(segments) });
 }
 
 function getKnownStatusKeys(filter: StatusFilter, seenStatusKeys: Set<string>): string[] {
@@ -1589,6 +1649,7 @@ function getKnownStatusKeys(filter: StatusFilter, seenStatusKeys: Set<string>): 
 export default function (pi: ExtensionAPI) {
 	let requestRender: (() => void) | undefined;
 	let statusFilter: StatusFilter = { mode: "all", hidden: new Set() };
+	let visibleSegments: SegmentName[] = readGlobalSegments() ?? DEFAULT_SEGMENTS;
 	const seenStatusKeys = new Set<string>();
 	const refresh = () => requestRender?.();
 	const progress = new FooterProgressEngine(refresh);
@@ -1606,6 +1667,81 @@ export default function (pi: ExtensionAPI) {
 	const persistStatusFilter = () => {
 		writeGlobalStatusFilter(statusFilter);
 		refresh();
+	};
+	const setVisibleSegments = (segments: readonly SegmentName[], ctx?: ExtensionContext) => {
+		const previousProgressVisible = visibleSegments.includes("progress");
+		visibleSegments = serializeSegments(segments);
+		writeGlobalSegments(visibleSegments);
+		const nextProgressVisible = visibleSegments.includes("progress");
+		if (previousProgressVisible && !nextProgressVisible) progress.shutdown();
+		if (!previousProgressVisible && nextProgressVisible && ctx) progress.startSession(ctx.cwd);
+		refresh();
+	};
+	const openSegmentConfigurator = async (ctx: ExtensionContext) => {
+		await ctx.ui.custom((tui, theme, _kb, done) => {
+			const segmentVisibility = new Map(
+				ALL_SEGMENTS.map(
+					(segment): [SegmentName, boolean] => [segment, visibleSegments.includes(segment)],
+				),
+			);
+			const persistFromVisibility = () => {
+				setVisibleSegments(
+					ALL_SEGMENTS.filter((segment) => segmentVisibility.get(segment)),
+					ctx,
+				);
+			};
+
+			const items: SettingItem[] = ALL_SEGMENTS.map((segment): SettingItem => ({
+				id: segment,
+				label: SEGMENT_LABELS[segment],
+				description: "Footer segment visibility",
+				currentValue: segmentVisibility.get(segment) ? "shown" : "hidden",
+				values: ["shown", "hidden"],
+			}));
+
+			const container = new Container();
+			container.addChild(
+				new (class {
+					render(_width: number) {
+						return [
+							theme.fg("accent", theme.bold("pi-bar footer visibility")),
+							theme.fg("dim", "Enter/Space toggles · Esc closes"),
+							"",
+						];
+					}
+					invalidate() {}
+				})(),
+			);
+
+			const settingsList = new SettingsList(
+				items,
+				Math.min(items.length + 2, 15),
+				getSettingsListTheme(),
+				(id, newValue) => {
+					if (isSegmentName(id)) {
+						segmentVisibility.set(id, newValue === "shown");
+						persistFromVisibility();
+					}
+				},
+				() => done(undefined),
+				{ enableSearch: true },
+			);
+
+			container.addChild(settingsList);
+
+			return {
+				render(width: number) {
+					return container.render(width);
+				},
+				invalidate() {
+					container.invalidate();
+				},
+				handleInput(data: string) {
+					settingsList.handleInput?.(data);
+					tui.requestRender();
+				},
+			};
+		});
 	};
 	const openStatusConfigurator = async (ctx: ExtensionContext) => {
 		const knownStatusKeys = getKnownStatusKeys(statusFilter, seenStatusKeys);
@@ -1706,10 +1842,70 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("bar", {
-		description: "Configure pi-bar footer status segments",
+		description: "Configure pi-bar footer visibility",
 		handler: async (args, ctx) => {
 			const [section, action, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-			if (!section || ((section === "status" || section === "statuses") && !action)) {
+			if (!section || section === "config" || section === "configure" || section === "edit") {
+				await openSegmentConfigurator(ctx);
+				return;
+			}
+			if (section === "list" || section === "ls") {
+				ctx.ui.notify(`pi-bar footer: ${describeSegments(visibleSegments)}`, "info");
+				return;
+			}
+
+			if (section === "segment" || section === "segments" || section === "footer") {
+				const segments = splitSegmentNames(rest.join(" "));
+				if ((action === "only" || action === "show" || action === "hide") && segments.length === 0) {
+					ctx.ui.notify(
+						`Segments: ${ALL_SEGMENTS.join(", ")}`,
+						"warning",
+					);
+					return;
+				}
+
+				switch (action) {
+					case undefined:
+					case "config":
+					case "configure":
+					case "edit":
+						await openSegmentConfigurator(ctx);
+						return;
+					case "list":
+					case "ls":
+						ctx.ui.notify(`pi-bar footer: ${describeSegments(visibleSegments)}`, "info");
+						return;
+					case "all":
+						setVisibleSegments(ALL_SEGMENTS, ctx);
+						break;
+					case "none":
+						setVisibleSegments([], ctx);
+						break;
+					case "only":
+						setVisibleSegments(segments, ctx);
+						break;
+					case "hide":
+						setVisibleSegments(
+							visibleSegments.filter((segment) => !segments.includes(segment)),
+							ctx,
+						);
+						break;
+					case "show":
+						setVisibleSegments([...visibleSegments, ...segments], ctx);
+						break;
+					default:
+						ctx.ui.notify(
+							"Usage: /bar [config] or /bar segments [list|all|none|only <segments>|show <segments>|hide <segments>]",
+							"warning",
+						);
+						return;
+				}
+
+				ctx.ui.notify(`pi-bar footer: ${describeSegments(visibleSegments)}`, "info");
+				return;
+			}
+
+			if ((section === "status" || section === "statuses") && !action) {
 				await openStatusConfigurator(ctx);
 				return;
 			}
@@ -1769,7 +1965,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			ctx.ui.notify(
-				"Usage: /bar status [list|all|none|only <keys>|show <keys>|hide <keys>]",
+				"Usage: /bar [config] or /bar segments [list|all|none|only <segments>|show <segments>|hide <segments>] or /bar status [list|all|none|only <keys>|show <keys>|hide <keys>]",
 				"warning",
 			);
 		},
@@ -1779,37 +1975,39 @@ export default function (pi: ExtensionAPI) {
 	pi.on("thinking_level_select", async () => refresh());
 	pi.on("turn_end", async () => refresh());
 	pi.on("before_agent_start", async (event, ctx) => {
-		progress.recordUserMessage(ctx, event.prompt);
+		if (visibleSegments.includes("progress")) progress.recordUserMessage(ctx, event.prompt);
 	});
 	pi.on("message_update", async (event, ctx) => {
-		progress.recordAssistantUpdate(ctx, event.message);
+		if (visibleSegments.includes("progress")) progress.recordAssistantUpdate(ctx, event.message);
 	});
 	pi.on("tool_call", async (event, ctx) => {
-		progress.recordToolCall(ctx, event);
+		if (visibleSegments.includes("progress")) progress.recordToolCall(ctx, event);
 	});
 	pi.on("tool_result", async (event, ctx) => {
-		progress.recordToolResult(ctx, event);
+		if (visibleSegments.includes("progress")) progress.recordToolResult(ctx, event);
 	});
 	pi.on("message_end", async (event, ctx) => {
-		progress.recordMessageEnd(ctx, event.message);
+		if (visibleSegments.includes("progress")) progress.recordMessageEnd(ctx, event.message);
 		refresh();
 	});
 	pi.on("session_before_tree", async () => {
 		progress.shutdown();
 	});
 	pi.on("session_tree", async (_event, ctx) => {
-		progress.startSession(ctx.cwd);
+		if (visibleSegments.includes("progress")) progress.startSession(ctx.cwd);
+		else progress.shutdown();
 		restoreStatusFilter(ctx);
 		refresh();
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		progress.startSession(ctx.cwd);
+		visibleSegments = readGlobalSegments() ?? DEFAULT_SEGMENTS;
+		if (visibleSegments.includes("progress")) progress.startSession(ctx.cwd);
+		else progress.shutdown();
 		restoreStatusFilter(ctx);
 
 		if (!ctx.hasUI) return;
 
-		const visibleSegments = parseSegments();
 		const { warningThreshold, errorThreshold } = parseThresholds();
 
 		ctx.ui.setFooter((tui, theme, footerData) => {

@@ -1,6 +1,6 @@
 {
   "name": "pi-bar",
-  "version": "0.3.32",
+  "version": "0.3.33",
   "description": "Pi footer/statusline showing active model, thinking level, context pressure, live progress updates, and extension statuses.",
   "type": "module",
   "keywords": [
@@ -51,6 +51,6 @@
     "extensions": [
       "./extensions/status-footer.ts"
     ],
-    "image": "https://cdn.jsdelivr.net/npm/pi-bar@0.3.32/assets/screenshot-yellow.png"
+    "image": "https://cdn.jsdelivr.net/npm/pi-bar@0.3.33/assets/screenshot-yellow.png"
   }
 }

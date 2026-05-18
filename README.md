@@ -9,9 +9,9 @@
 claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active
 ```
 
-![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.32/assets/screenshot-green.png)
-![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.32/assets/screenshot-yellow.png)
-![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.32/assets/screenshot-red.png)
+![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.33/assets/screenshot-green.png)
+![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.33/assets/screenshot-yellow.png)
+![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.33/assets/screenshot-red.png)
 
 ## Why use it?
 
@@ -21,7 +21,7 @@ claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package struct
 - **Follow what pi is doing** — a one-line progress update keeps the current task visible without scrolling.
 - **Keep extension statuses visible** — statuses other extensions set still appear in the footer.
 
-pi-bar is intentionally tiny: one small extension, no broad behavior changes, and no commands to learn. It replaces pi's built-in footer with a compact model / thinking / context / progress / extension-status line.
+pi-bar is intentionally tiny: one small extension and no broad behavior changes. It replaces pi's built-in footer with a compact model / thinking / context / progress / extension-status line.
 
 ## Install
 
@@ -37,20 +37,33 @@ If pi is already running after install, reload resources:
 
 ## Customization
 
-pi-bar works out of the box, but you can tune it with environment variables before launching pi.
+pi-bar works out of the box. Run `/bar` inside pi to choose which footer segments are shown:
 
-### Show or hide segments
+```text
+/bar
+```
+
+Toggle `Model`, `Thinking level`, `Context usage`, `Progress update`, and `Extension statuses` between `shown` and `hidden`. You can also use commands:
+
+```text
+/bar segments list
+/bar segments only model context
+/bar segments hide progress
+/bar segments show thinking
+```
+
+Allowed segments are `model`, `thinking`, `context`, `progress`, and `extensions`. The `progress` segment stays hidden until pi-bar has a current update. The `extensions` segment stays hidden when no extension has set a status.
+
+You can also set startup defaults with environment variables before launching pi:
 
 ```bash
 PI_BAR_SHOW=model,thinking,context,progress,extensions pi
 PI_BAR_SHOW=model,context pi
 ```
 
-Allowed segments are `model`, `thinking`, `context`, `progress`, and `extensions`. The `progress` segment stays hidden until pi-bar has a current update. The `extensions` segment stays hidden when no extension has set a status.
-
 ### Configure live progress updates
 
-pi-bar shows a short, plain-English description of what pi is working on right now. It refreshes as pi works and resets when you switch branches in the session tree, so stale updates never follow you across tasks. Set `PI_BAR_SHOW` without `progress` to hide it.
+pi-bar shows a short, plain-English description of what pi is working on right now. It refreshes as pi works and resets when you switch branches in the session tree, so stale updates never follow you across tasks. Hide `Progress update` in `/bar`, run `/bar segments hide progress`, or set `PI_BAR_SHOW` without `progress` to disable it.
 
 Pick a specific model for the update by setting the env var or pi settings:
 
@@ -62,10 +75,10 @@ Or in pi settings: `bar.progressModel`. Otherwise pi-bar picks a fast model you 
 
 ### Configure extension statuses
 
-Other pi extensions can publish small status badges. Pi-bar collects them into the `extensions` segment. Run `/bar` inside pi to pick which ones to show:
+Other pi extensions can publish small status badges. Pi-bar collects them into the `extensions` segment. Run `/bar status` inside pi to pick which ones to show:
 
 ```text
-/bar
+/bar status
 ```
 
 Toggle each status between `shown` and `hidden`. The `New statuses` row controls the default for badges that appear later.
@@ -89,4 +102,4 @@ The first number is the warning/yellow threshold. The second number is the dange
 
 Pi extensions run with your local user permissions. Review any pi package source before installing it.
 
-Progress updates send short snippets of your session activity to the selected model provider. Disable the `progress` segment with `PI_BAR_SHOW` if that is not acceptable.
+Progress updates send short snippets of your session activity to the selected model provider. Hide `Progress update` in `/bar` or disable the `progress` segment with `PI_BAR_SHOW` if that is not acceptable.
