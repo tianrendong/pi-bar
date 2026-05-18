@@ -1679,33 +1679,83 @@ export default function (pi: ExtensionAPI) {
 	};
 	const openSegmentConfigurator = async (ctx: ExtensionContext) => {
 		await ctx.ui.custom((tui, theme, _kb, done) => {
+			const knownStatusKeys = getKnownStatusKeys(statusFilter, seenStatusKeys);
 			const segmentVisibility = new Map(
 				ALL_SEGMENTS.map(
 					(segment): [SegmentName, boolean] => [segment, visibleSegments.includes(segment)],
 				),
 			);
-			const persistFromVisibility = () => {
+			let futureShown = statusFilter.mode === "all";
+			const statusVisibility = new Map(
+				knownStatusKeys.map((key): [string, boolean] => [
+					key,
+					shouldShowStatus(key, statusFilter),
+				]),
+			);
+			const persistSegmentsFromVisibility = () => {
 				setVisibleSegments(
 					ALL_SEGMENTS.filter((segment) => segmentVisibility.get(segment)),
 					ctx,
 				);
 			};
+			const persistStatusesFromVisibility = () => {
+				if (futureShown) {
+					statusFilter = {
+						mode: "all",
+						hidden: new Set(
+							knownStatusKeys.filter((key) => !statusVisibility.get(key)),
+						),
+					};
+				} else {
+					statusFilter = {
+						mode: "only",
+						shown: new Set(
+							knownStatusKeys.filter((key) => statusVisibility.get(key)),
+						),
+					};
+				}
+				persistStatusFilter();
+			};
 
-			const items: SettingItem[] = ALL_SEGMENTS.map((segment): SettingItem => ({
-				id: segment,
+			const segmentItems: SettingItem[] = ALL_SEGMENTS.map((segment): SettingItem => ({
+				id: `segment:${segment}`,
 				label: SEGMENT_LABELS[segment],
 				description: "Footer segment visibility",
 				currentValue: segmentVisibility.get(segment) ? "shown" : "hidden",
 				values: ["shown", "hidden"],
 			}));
+			const statusItems: SettingItem[] = knownStatusKeys.length > 0
+				? [
+					{
+						id: "status:__future",
+						label: "New extension statuses",
+						description: "Default visibility for status keys discovered later",
+						currentValue: futureShown ? "shown" : "hidden",
+						values: ["shown", "hidden"],
+					},
+					...knownStatusKeys.map((key): SettingItem => ({
+						id: `status:${key}`,
+						label: `Status: ${key}`,
+						description: "Extension status visibility",
+						currentValue: statusVisibility.get(key) ? "shown" : "hidden",
+						values: ["shown", "hidden"],
+					})),
+				]
+				: [];
+			const items: SettingItem[] = [...segmentItems, ...statusItems];
 
 			const container = new Container();
 			container.addChild(
 				new (class {
 					render(_width: number) {
 						return [
-							theme.fg("accent", theme.bold("pi-bar footer visibility")),
-							theme.fg("dim", "Enter/Space toggles · Esc closes"),
+							theme.fg("accent", theme.bold("pi-bar visibility")),
+							theme.fg(
+								"dim",
+								knownStatusKeys.length > 0
+									? "Footer segments + extension statuses · Enter/Space toggles · Esc closes"
+									: "Footer segments · no extension statuses seen yet · Esc closes",
+							),
 							"",
 						];
 					}
@@ -1715,12 +1765,26 @@ export default function (pi: ExtensionAPI) {
 
 			const settingsList = new SettingsList(
 				items,
-				Math.min(items.length + 2, 15),
+				Math.min(items.length + 2, 18),
 				getSettingsListTheme(),
 				(id, newValue) => {
-					if (isSegmentName(id)) {
-						segmentVisibility.set(id, newValue === "shown");
-						persistFromVisibility();
+					if (id.startsWith("segment:")) {
+						const segment = id.slice("segment:".length);
+						if (!isSegmentName(segment)) return;
+						segmentVisibility.set(segment, newValue === "shown");
+						persistSegmentsFromVisibility();
+						return;
+					}
+
+					if (id === "status:__future") {
+						futureShown = newValue === "shown";
+						persistStatusesFromVisibility();
+						return;
+					}
+
+					if (id.startsWith("status:")) {
+						statusVisibility.set(id.slice("status:".length), newValue === "shown");
+						persistStatusesFromVisibility();
 					}
 				},
 				() => done(undefined),
