@@ -132,6 +132,7 @@ const DEFAULT_WARNING_THRESHOLD = 70;
 const DEFAULT_ERROR_THRESHOLD = 90;
 
 const SEGMENT_SEPARATOR = "❯";
+const EXTENSION_STATUS_SEPARATOR = SEGMENT_SEPARATOR;
 
 function formatTokens(n: number): string {
 	if (n >= 1_000_000) {
@@ -1524,16 +1525,18 @@ function formatExtensionStatuses(
 	statuses: ReadonlyMap<string, string>,
 	filter: StatusFilter,
 	seenStatusKeys: Set<string>,
-): string | null {
+): string[] | null {
 	const parts = Array.from(statuses.entries())
-		.filter(([, text]) => text.trim().length > 0)
+		.filter(([, text]) => stripTerminalControls(text).trim().length > 0)
 		.filter(([key]) => {
 			seenStatusKeys.add(key);
 			return shouldShowStatus(key, filter);
 		})
-		.map(([key, text]) => `${key}:${text}`);
+		.map(([key, text]) =>
+			`${stripTerminalControls(key)}:${stripTerminalControls(text)}`,
+		);
 
-	return parts.length > 0 ? parts.join(" ") : null;
+	return parts.length > 0 ? parts : null;
 }
 
 function serializeStatusFilter(filter: StatusFilter): SerializedStatusFilter {
@@ -2085,7 +2088,7 @@ export default function (pi: ExtensionAPI) {
 				render(width: number): string[] {
 					const modelName = formatModelName(ctx.model?.id);
 					const thinkingLevel = String(pi.getThinkingLevel());
-					const extensionStatuses = formatExtensionStatuses(
+					const extensionStatusParts = formatExtensionStatuses(
 						footerData?.getExtensionStatuses?.() ?? new Map(),
 						statusFilter,
 						seenStatusKeys,
@@ -2102,12 +2105,17 @@ export default function (pi: ExtensionAPI) {
 						: "—";
 					const progressText = progress.text();
 
+					const extensionStatuses = extensionStatusParts
+						? extensionStatusParts
+							.map((part) => theme.fg("text", part))
+							.join(` ${theme.fg("dim", EXTENSION_STATUS_SEPARATOR)} `)
+						: null;
 					const segmentRenderers: Record<SegmentName, string | null> = {
 						model: theme.fg("accent", modelName),
 						thinking: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
 						context: theme.fg(contextSegmentColor, contextText),
-						progress: progressText ? theme.fg("muted", progressText) : null,
-						extensions: extensionStatuses ? theme.fg("muted", extensionStatuses) : null,
+						progress: progressText ? theme.fg("text", progressText) : null,
+						extensions: extensionStatuses,
 					};
 
 					const separator = `  ${theme.fg("dim", SEGMENT_SEPARATOR)}  `;

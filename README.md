@@ -6,12 +6,12 @@
 **Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, a live progress update, and any extension statuses visible in pi's footer.
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active
+claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active ❯ queue:2
 ```
 
-![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.34/assets/screenshot-green.png)
-![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.34/assets/screenshot-yellow.png)
-![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.34/assets/screenshot-red.png)
+![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-green.png)
+![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-yellow.png)
+![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-red.png)
 
 ## Why use it?
 
@@ -75,7 +75,7 @@ Or in pi settings: `bar.progressModel`. Otherwise pi-bar picks a fast model you 
 
 ### Configure extension statuses
 
-Other pi extensions can publish small status badges. Pi-bar collects them into the `extensions` segment. Run `/bar` or `/bar status` inside pi to pick which ones to show:
+Other pi extensions can publish small status badges. Pi-bar collects them into the `extensions` segment, strips embedded terminal colors, and separates each badge with the same `❯` divider used by other footer segments. Run `/bar` or `/bar status` inside pi to pick which ones to show:
 
 ```text
 /bar status
