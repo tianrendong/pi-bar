@@ -85,6 +85,24 @@ Toggle each status between `shown` and `hidden`. The `New statuses` row controls
 
 Your choices persist across pi sessions in `~/.pi/agent/pi-bar.json`. Override the path with `PI_BAR_CONFIG=/some/path.json`.
 
+### Hide status labels
+
+By default extension statuses show their key as a prefix (`mcp:MCP: 0/2 servers`). You can hide the label prefix to show only the status text (`MCP: 0/2 servers`):
+
+```text
+/bar status labels       # toggle hide/show
+/bar status labels hide  # hide labels
+/bar status labels show  # show labels
+```
+
+Or set it directly in `~/.pi/agent/pi-bar.json`:
+
+```json
+{
+  "hideStatusLabels": true
+}
+```
+
 ### Change context thresholds
 
 ```bash

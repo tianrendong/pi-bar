@@ -45,6 +45,7 @@ type SerializedStatusFilter =
 type GlobalBarConfig = {
 	statusFilter?: SerializedStatusFilter;
 	segments?: SegmentName[];
+	hideStatusLabels?: boolean;
 };
 type ProgressActivityType =
 	| "user_message"
@@ -1524,6 +1525,7 @@ function formatExtensionStatuses(
 	statuses: ReadonlyMap<string, string>,
 	filter: StatusFilter,
 	seenStatusKeys: Set<string>,
+	hideLabels?: boolean,
 ): string | null {
 	const parts = Array.from(statuses.entries())
 		.filter(([, text]) => text.trim().length > 0)
@@ -1531,7 +1533,9 @@ function formatExtensionStatuses(
 			seenStatusKeys.add(key);
 			return shouldShowStatus(key, filter);
 		})
-		.map(([key, text]) => `${key}:${text}`);
+		.map(([key, text]) =>
+			hideLabels ? text : `${key}:${text}`,
+		);
 
 	return parts.length > 0 ? parts.join(" ") : null;
 }
@@ -1604,6 +1608,7 @@ function readGlobalConfig(): GlobalBarConfig {
 		return {
 			statusFilter: statusFilter ? serializeStatusFilter(statusFilter) : undefined,
 			segments: parseSerializedSegments(data.segments) ?? undefined,
+			hideStatusLabels: typeof data.hideStatusLabels === "boolean" ? data.hideStatusLabels : undefined,
 		};
 	} catch {
 		return {};
@@ -1650,6 +1655,7 @@ export default function (pi: ExtensionAPI) {
 	let requestRender: (() => void) | undefined;
 	let statusFilter: StatusFilter = { mode: "all", hidden: new Set() };
 	let visibleSegments: SegmentName[] = readGlobalSegments() ?? DEFAULT_SEGMENTS;
+	let hideLabels = readGlobalConfig().hideStatusLabels ?? false;
 	const seenStatusKeys = new Set<string>();
 	const refresh = () => requestRender?.();
 	const progress = new FooterProgressEngine(refresh);
@@ -1666,6 +1672,12 @@ export default function (pi: ExtensionAPI) {
 	};
 	const persistStatusFilter = () => {
 		writeGlobalStatusFilter(statusFilter);
+		refresh();
+	};
+	const persistHideLabels = (value: boolean) => {
+		hideLabels = value;
+		const existing = readGlobalConfig();
+		writeGlobalConfig({ ...existing, hideStatusLabels: value });
 		refresh();
 	};
 	const setVisibleSegments = (segments: readonly SegmentName[], ctx?: ExtensionContext) => {
@@ -2015,9 +2027,23 @@ export default function (pi: ExtensionAPI) {
 							for (const key of keys) statusFilter.hidden.delete(key);
 						}
 						break;
+					case "labels": {
+						const setting = keys[0];
+						if (setting === "show" || setting === "on") {
+							persistHideLabels(false);
+							ctx.ui.notify("pi-bar: status labels shown", "info");
+						} else if (setting === "hide" || setting === "off") {
+							persistHideLabels(true);
+							ctx.ui.notify("pi-bar: status labels hidden", "info");
+						} else {
+							persistHideLabels(!hideLabels);
+							ctx.ui.notify(`pi-bar: status labels ${hideLabels ? "shown" : "hidden"}`, "info");
+						}
+						return;
+					}
 					default:
 						ctx.ui.notify(
-							"Usage: /bar status [list|all|none|only <keys>|show <keys>|hide <keys>]",
+							"Usage: /bar status [list|all|none|only <keys>|show <keys>|hide <keys>|labels [show|hide]]",
 							"warning",
 						);
 						return;
@@ -2029,7 +2055,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			ctx.ui.notify(
-				"Usage: /bar [config] or /bar segments [list|all|none|only <segments>|show <segments>|hide <segments>] or /bar status [list|all|none|only <keys>|show <keys>|hide <keys>]",
+				"Usage: /bar [config] or /bar segments [list|all|none|only <segments>|show <segments>|hide <segments>] or /bar status [list|all|none|only <keys>|show <keys>|hide <keys>|labels [show|hide]]",
 				"warning",
 			);
 		},
@@ -2057,10 +2083,15 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_before_tree", async () => {
 		progress.shutdown();
 	});
+	const restoreHideLabels = () => {
+		hideLabels = readGlobalConfig().hideStatusLabels ?? false;
+	};
+
 	pi.on("session_tree", async (_event, ctx) => {
 		if (visibleSegments.includes("progress")) progress.startSession(ctx.cwd);
 		else progress.shutdown();
 		restoreStatusFilter(ctx);
+		restoreHideLabels();
 		refresh();
 	});
 
@@ -2069,6 +2100,7 @@ export default function (pi: ExtensionAPI) {
 		if (visibleSegments.includes("progress")) progress.startSession(ctx.cwd);
 		else progress.shutdown();
 		restoreStatusFilter(ctx);
+		restoreHideLabels();
 
 		if (!ctx.hasUI) return;
 
@@ -2089,6 +2121,7 @@ export default function (pi: ExtensionAPI) {
 						footerData?.getExtensionStatuses?.() ?? new Map(),
 						statusFilter,
 						seenStatusKeys,
+						hideLabels,
 					);
 					const usage = ctx.getContextUsage();
 					const contextSegmentColor = contextColor(
