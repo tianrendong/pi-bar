@@ -35,7 +35,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 
-type SegmentName = "model" | "thinking" | "context" | "progress" | "extensions";
+type SegmentName = "model" | "thinking" | "context" | "cache_hit_ratio" | "progress" | "extensions";
 type StatusFilter =
 	| { mode: "all"; hidden: Set<string> }
 	| { mode: "only"; shown: Set<string> };
@@ -118,6 +118,7 @@ const ALL_SEGMENTS: readonly SegmentName[] = [
 	"model",
 	"thinking",
 	"context",
+	"cache_hit_ratio",
 	"progress",
 	"extensions",
 ];
@@ -125,6 +126,7 @@ const SEGMENT_LABELS: Record<SegmentName, string> = {
 	model: "Model",
 	thinking: "Thinking level",
 	context: "Context usage",
+	cache_hit_ratio: "Cache hit rate",
 	progress: "Progress update",
 	extensions: "Extension statuses",
 };
@@ -1656,6 +1658,7 @@ export default function (pi: ExtensionAPI) {
 	const seenStatusKeys = new Set<string>();
 	const refresh = () => requestRender?.();
 	const progress = new FooterProgressEngine(refresh);
+	let latestCacheHitRate: number | null = null;
 	const restoreStatusFilter = (ctx: ExtensionContext) => {
 		let restoredFilter = readGlobalStatusFilter();
 		if (!restoredFilter) {
@@ -2055,6 +2058,13 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("message_end", async (event, ctx) => {
 		if (visibleSegments.includes("progress")) progress.recordMessageEnd(ctx, event.message);
+		const msg = event.message as any;
+		if (msg?.role === "assistant" && msg?.usage) {
+			const cacheRead = msg.usage.cacheRead ?? 0;
+			const input = msg.usage.input ?? 0;
+			const denominator = input + cacheRead;
+			latestCacheHitRate = denominator > 0 ? (cacheRead / denominator) * 100 : null;
+		}
 		refresh();
 	});
 	pi.on("session_before_tree", async () => {
@@ -2114,6 +2124,7 @@ export default function (pi: ExtensionAPI) {
 						model: theme.fg("accent", modelName),
 						thinking: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
 						context: theme.fg(contextSegmentColor, contextText),
+						cache_hit_ratio: latestCacheHitRate !== null ? theme.fg("muted", `CH:${latestCacheHitRate.toFixed(0)}%`) : null,
 						progress: progressText ? theme.fg("text", progressText) : null,
 						extensions: extensionStatuses,
 					};
