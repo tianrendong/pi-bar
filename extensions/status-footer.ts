@@ -35,7 +35,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 
-type SegmentName = "model" | "thinking" | "context" | "progress" | "extensions";
+type SegmentName = "model" | "thinking" | "context" | "cwd" | "progress" | "extensions";
 type StatusFilter =
 	| { mode: "all"; hidden: Set<string> }
 	| { mode: "only"; shown: Set<string> };
@@ -118,6 +118,7 @@ const ALL_SEGMENTS: readonly SegmentName[] = [
 	"model",
 	"thinking",
 	"context",
+	"cwd",
 	"progress",
 	"extensions",
 ];
@@ -125,6 +126,7 @@ const SEGMENT_LABELS: Record<SegmentName, string> = {
 	model: "Model",
 	thinking: "Thinking level",
 	context: "Context usage",
+	cwd: "Current directory",
 	progress: "Progress update",
 	extensions: "Extension statuses",
 };
@@ -134,6 +136,15 @@ const DEFAULT_ERROR_THRESHOLD = 90;
 const SEGMENT_SEPARATOR = "❯";
 const EXTENSION_STATUS_SEPARATOR = SEGMENT_SEPARATOR;
 
+function formatCwd(cwd: string): string {
+	const home = homedir();
+	const shortened = cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
+	// Keep at most 3 path components to avoid blowing out the footer.
+	const parts = shortened.split("/").filter(Boolean);
+	if (parts.length <= 3) return shortened;
+	const head = shortened.startsWith("~") ? "~" : "";
+	return `${head}/…/${parts.slice(-2).join("/")}`;
+}
 function formatTokens(n: number): string {
 	if (n >= 1_000_000) {
 		const value = n / 1_000_000;
@@ -2114,6 +2125,7 @@ export default function (pi: ExtensionAPI) {
 						model: theme.fg("accent", modelName),
 						thinking: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
 						context: theme.fg(contextSegmentColor, contextText),
+						cwd: theme.fg("muted", formatCwd(ctx.cwd)),
 						progress: progressText ? theme.fg("text", progressText) : null,
 						extensions: extensionStatuses,
 					};
