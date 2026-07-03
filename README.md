@@ -6,7 +6,7 @@
 **Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, a live progress update, and any extension statuses visible in pi's footer.
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active ❯ queue:2
+anthropic/claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active ❯ queue:2
 ```
 
 ![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-green.png)
@@ -15,7 +15,7 @@ claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package struct
 
 ## Why use it?
 
-- **See the active model at a glance** — catch accidental model switches before an expensive or sensitive task starts.
+- **See the active model and provider at a glance** — catch accidental model switches before an expensive or sensitive task starts.
 - **Track thinking level in place** — immediately notice when you are using the wrong reasoning setting.
 - **Watch context pressure early** — context usage turns green, yellow, then red as you approach the limit.
 - **Follow what pi is doing** — a one-line progress update keeps the current task visible without scrolling.
@@ -84,6 +84,24 @@ Other pi extensions can publish small status badges. Pi-bar collects them into t
 Toggle each status between `shown` and `hidden`. The `New statuses` row controls the default for badges that appear later.
 
 Your choices persist across pi sessions in `~/.pi/agent/pi-bar.json`. Override the path with `PI_BAR_CONFIG=/some/path.json`.
+
+### Hide status labels
+
+By default extension statuses show their key as a prefix (`mcp:MCP: 0/2 servers`). You can hide the label prefix to show only the status text (`MCP: 0/2 servers`):
+
+```text
+/bar status labels       # toggle hide/show
+/bar status labels hide  # hide labels
+/bar status labels show  # show labels
+```
+
+Or set it directly in `~/.pi/agent/pi-bar.json`:
+
+```json
+{
+  "hideStatusLabels": true
+}
+```
 
 ### Change context thresholds
 
