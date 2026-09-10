@@ -6,7 +6,7 @@
 **Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, a live progress update, and any extension statuses visible in pi's footer.
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active ❯ queue:2
+claude-opus-4.7 ❯ think:med ❯ 2.6% / 1.0M ❯ Reviewing package structure ❯ Plan active ❯ Queue: 2
 ```
 
 ![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-green.png)
@@ -34,6 +34,18 @@ If pi is already running after install, reload resources:
 ```text
 /reload
 ```
+
+## Automatic layout
+
+The footer adapts to terminal width without extra configuration:
+
+- **Model, thinking level, and context percentage take priority.**
+- Progress text shrinks first. CWD then compacts from its preferred path to `parent/project`, then `project`; context window size is omitted when needed.
+- Extension badges stay in their published order. Badges that cannot fit are hidden whole, with `+N` showing how many are behind the overflow. Open `/bar status` to inspect their text and visibility by key.
+- On very narrow terminals, progress and CWD yield to core information. If even the core cannot fit, the model name is truncated first. At extreme widths, not every value or overflow count can remain visible.
+- Widening the terminal restores the full display. Thinking and context retain their semantic colors throughout.
+
+Existing segment visibility settings still apply; CWD remains opt-in.
 
 ## Customization
 
@@ -72,7 +84,7 @@ Enable the optional `cwd` segment to distinguish projects and sessions:
 Or set startup segments with `PI_BAR_SHOW=model,thinking,context,cwd,progress,extensions`.
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  ~/projects/pi-bar
+claude-opus-4.7 ❯ think:med ❯ 2.6% / 1.0M ❯ ~/projects/pi-bar
 ```
 
 Your home directory becomes `~`. Long paths omit middle directories, retaining trailing directory names where possible. The segment is capped at 36 terminal columns, including wide Unicode characters. Override the cap before starting pi:
@@ -99,7 +111,9 @@ Or in pi settings: `bar.progressModel`. Otherwise pi-bar picks a fast model you 
 
 ### Configure extension statuses
 
-Other pi extensions can publish small status badges. Pi-bar collects them into the `extensions` segment, strips embedded terminal colors, and separates each badge with the same `❯` divider used by other footer segments. Run `/bar` or `/bar status` inside pi to pick which ones to show:
+Other pi extensions can publish small status badges. Pi-bar displays their text as written, without prepending internal keys: `setStatus("mcp", "MCP: 2/2 servers")` appears as `MCP: 2/2 servers`, not `mcp:MCP: 2/2 servers`. Extensions should publish self-describing text; pi-bar does not guess labels for bare values.
+
+Pi-bar strips embedded terminal colors and control sequences, and separates each badge with the same `❯` divider used by other footer segments. Keys remain available for filtering and identification in `/bar`; selecting a status row shows its current sanitized text. Run `/bar` or `/bar status` inside pi to inspect statuses or pick which ones to show:
 
 ```text
 /bar status
@@ -130,7 +144,7 @@ npm test
 npm run check
 ```
 
-Tests cover path formatting, terminal safety, width limits, and segment visibility/persistence. Test configuration mirrors Pi's `pi-ai/compat` loader alias; runtime dependencies remain optional peers supplied by Pi.
+Tests cover path formatting, display-ready statuses, responsive layout, terminal safety, ANSI/Unicode width limits, resize behavior, and segment/status visibility persistence. Test configuration mirrors Pi's `pi-ai/compat` loader alias; runtime dependencies remain optional peers supplied by Pi.
 
 ## Security note
 

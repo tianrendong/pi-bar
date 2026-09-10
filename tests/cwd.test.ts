@@ -73,7 +73,7 @@ test("width setting accepts integers >= 8 and rejects malformed values", () => {
 	assert.equal(parseCwdMaxWidth(" 48 "), 48);
 });
 
-function harness(cwd: string) {
+function harness(cwd: string, statuses = new Map<string, string>()) {
 	const handlers = new Map<string, Function>();
 	let command: { handler: Function };
 	let footer: { render(width: number): string[]; dispose(): void };
@@ -94,7 +94,7 @@ function harness(cwd: string) {
 				if (factory) footer = factory(
 					{ requestRender() {} },
 					{ fg: (_color: string, text: string) => text },
-					{ getExtensionStatuses: () => new Map() },
+					{ getExtensionStatuses: () => statuses },
 				);
 			},
 		},
@@ -145,4 +145,33 @@ test("CWD is opt-in, persists through commands and reload, respects env and new 
 	assert.ok(visibleWidth(next.render(4)) <= 4);
 	assert.doesNotMatch(next.render(), /cwd-marker|test-model/);
 	await next.shutdown();
+});
+
+test("footer uses display-ready badges, overflows whole statuses, and preserves key filters", async () => {
+	process.env.PI_BAR_SHOW = "extensions";
+	const statuses = new Map([
+		["internal-mcp-key", "\x1b[31mMCP: 2/2\x1b[0m"],
+		["internal-plan-key", "Plan\nactive"],
+		["empty", "\x1b]0;title\x07"],
+	]);
+	const first = harness("/project", statuses);
+	await first.start();
+	assert.equal(first.render(), "MCP: 2/2 ❯ Plan active");
+	assert.equal(first.render(14), "MCP: 2/2 ❯ +1");
+	assert.equal(first.render(8), "+2");
+	await first.command("status hide internal-mcp-key");
+	assert.equal(first.render(), "Plan active");
+	assert.deepEqual(JSON.parse(readFileSync(config, "utf8")).statusFilter.hidden, ["internal-mcp-key"]);
+	await first.shutdown();
+
+	const reloaded = harness("/project", statuses);
+	await reloaded.start();
+	assert.equal(reloaded.render(), "Plan active");
+	await reloaded.command("status show internal-mcp-key");
+	assert.equal(reloaded.render(), "MCP: 2/2 ❯ Plan active");
+	statuses.set("internal-plan-key", "Plan done");
+	assert.equal(reloaded.render(), "MCP: 2/2 ❯ Plan done");
+	await reloaded.command("segments none");
+	assert.equal(reloaded.render(), "");
+	await reloaded.shutdown();
 });
