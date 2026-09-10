@@ -6,7 +6,7 @@
 **Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, a live progress update, and any extension statuses visible in pi's footer.
 
 ```text
-claude-opus-4.7 ❯ think:med ❯ 2.6% / 1.0M ❯ Reviewing package structure ❯ Plan active ❯ Queue: 2
+claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  Plan active  ❯  Queue: 2
 ```
 
 ![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-green.png)
@@ -40,7 +40,8 @@ If pi is already running after install, reload resources:
 The footer adapts to terminal width without extra configuration:
 
 - **Model, thinking level, and context percentage take priority.**
-- Progress text shrinks first. CWD then compacts from its preferred path to `parent/project`, then `project`; context window size is omitted when needed.
+- Separators have two spaces on each side by default, for a roomier display.
+- Progress text shrinks first. If space is still tight, separator padding reduces to one space per side before compacting content. CWD then compacts from its preferred path to `parent/project`, then `project`; context window size is omitted when needed.
 - Extension badges stay in their published order. Badges that cannot fit are hidden whole, with `+N` showing how many are behind the overflow. Open `/bar status` to inspect their text and visibility by key.
 - On very narrow terminals, progress and CWD yield to core information. If even the core cannot fit, the model name is truncated first. At extreme widths, not every value or overflow count can remain visible.
 - Widening the terminal restores the full display. Thinking and context retain their semantic colors throughout.
@@ -84,7 +85,7 @@ Enable the optional `cwd` segment to distinguish projects and sessions:
 Or set startup segments with `PI_BAR_SHOW=model,thinking,context,cwd,progress,extensions`.
 
 ```text
-claude-opus-4.7 ❯ think:med ❯ 2.6% / 1.0M ❯ ~/projects/pi-bar
+claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  ~/projects/pi-bar
 ```
 
 Your home directory becomes `~`. Long paths omit middle directories, retaining trailing directory names where possible. The segment is capped at 36 terminal columns, including wide Unicode characters. Override the cap before starting pi:

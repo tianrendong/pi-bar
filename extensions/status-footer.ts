@@ -219,15 +219,16 @@ export type FooterSegment = {
 	alternatives?: readonly string[];
 };
 
-/** Pure, column-aware layout. Never split a status badge to make it fit. */
+/** Pure, column-aware layout. The divider may be styled but has no padding. Never split a status badge. */
 export function layoutFooter(
 	segments: readonly FooterSegment[],
 	badges: readonly string[],
 	width: number,
-	separator = ` ${SEGMENT_SEPARATOR} `,
+	divider = SEGMENT_SEPARATOR,
 ): string {
 	if (!Number.isFinite(width) || width <= 0) return "";
 	width = Math.floor(width);
+	let separator = `  ${divider}  `;
 	const items = segments.map((segment) => ({ ...segment }));
 	const extensions = items.find((item) => item.name === "extensions");
 	let shownBadges = badges.length;
@@ -246,6 +247,12 @@ export function layoutFooter(
 		const minimumWidth = Math.min(12, width);
 		const progressWidth = Math.min(currentWidth, Math.max(minimumWidth, currentWidth - overflow()));
 		progress.text = truncateToWidth(progress.text, progressWidth, "…");
+	}
+	// Keep the roomy default while progress alone can absorb width pressure.
+	// Tighten gaps before compacting paths/context or overflowing whole badges.
+	if (overflow() > 0) {
+		separator = ` ${divider} `;
+		updateBadges();
 	}
 	for (const name of ["cwd", "context", "thinking"] as const) {
 		const item = items.find((item) => item.name === name);
@@ -2275,7 +2282,7 @@ export default function (pi: ExtensionAPI) {
 						visibleSegments.map((name) => ({ name, ...renderers[name] })),
 						(extensionStatusParts ?? []).map((part) => theme.fg("text", part)),
 						width,
-						` ${theme.fg("dim", SEGMENT_SEPARATOR)} `,
+						theme.fg("dim", SEGMENT_SEPARATOR),
 					)];
 				},
 			};
