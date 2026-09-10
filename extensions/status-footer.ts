@@ -136,7 +136,6 @@ const DEFAULT_WARNING_THRESHOLD = 70;
 const DEFAULT_ERROR_THRESHOLD = 90;
 
 const SEGMENT_SEPARATOR = "❯";
-const EXTENSION_STATUS_SEPARATOR = SEGMENT_SEPARATOR;
 
 function formatTokens(n: number): string {
 	if (n >= 1_000_000) {
@@ -193,6 +192,104 @@ export function formatCwd(
 		compact = candidate;
 	}
 	return truncateToWidth(compact, maxWidth);
+}
+
+/** Preferred directory display, then parent/project, then project only. */
+export function cwdVariants(
+	cwd: string,
+	home = homedir(),
+	maxWidth = DEFAULT_CWD_MAX_WIDTH,
+	paths = process.platform === "win32" ? win32 : posix,
+): string[] {
+	const safeCwd = stripTerminalControls(cwd);
+	const leaf = paths.basename(safeCwd);
+	const parent = paths.basename(paths.dirname(safeCwd));
+	return [
+		formatCwd(cwd, home, maxWidth, paths),
+		...[parent && leaf ? `${parent}${paths.sep}${leaf}` : leaf, leaf]
+			.filter(Boolean)
+			.map((text) => truncateToWidth(stripTerminalControls(text), maxWidth, "…")),
+	].map(stripTerminalControls);
+}
+
+export type FooterSegment = {
+	name: SegmentName;
+	text: string;
+	/** Shorter, already styled representations, in preference order. */
+	alternatives?: readonly string[];
+};
+
+/** Pure, column-aware layout. Never split a status badge to make it fit. */
+export function layoutFooter(
+	segments: readonly FooterSegment[],
+	badges: readonly string[],
+	width: number,
+	separator = ` ${SEGMENT_SEPARATOR} `,
+): string {
+	if (!Number.isFinite(width) || width <= 0) return "";
+	width = Math.floor(width);
+	const items = segments.map((segment) => ({ ...segment }));
+	const extensions = items.find((item) => item.name === "extensions");
+	let shownBadges = badges.length;
+	const updateBadges = () => {
+		if (!extensions) return;
+		const hidden = badges.length - shownBadges;
+		extensions.text = [...badges.slice(0, shownBadges), ...(hidden ? [`+${hidden}`] : [])].join(separator);
+	};
+	updateBadges();
+	const line = () => items.map((item) => item.text).filter(Boolean).join(separator);
+	const overflow = () => visibleWidth(line()) - width;
+	const progress = items.find((item) => item.name === "progress");
+	if (progress && overflow() > 0) {
+		const currentWidth = visibleWidth(progress.text);
+		// Keep a short activity fragment while trying the other compact forms.
+		const minimumWidth = Math.min(12, width);
+		const progressWidth = Math.min(currentWidth, Math.max(minimumWidth, currentWidth - overflow()));
+		progress.text = truncateToWidth(progress.text, progressWidth, "…");
+	}
+	for (const name of ["cwd", "context", "thinking"] as const) {
+		const item = items.find((item) => item.name === name);
+		if (!item) continue;
+		for (const alternative of item.alternatives ?? []) {
+			if (overflow() <= 0) break;
+			if (visibleWidth(alternative) < visibleWidth(item.text)) item.text = alternative;
+		}
+	}
+	while (extensions && shownBadges > 0 && overflow() > 0) {
+		shownBadges--;
+		updateBadges();
+	}
+	// On very narrow terminals, remove optional content before clipping identity.
+	for (const name of ["progress", "cwd", "extensions"] as const) {
+		if (overflow() <= 0) break;
+		const item = items.find((item) => item.name === name);
+		if (item) {
+			item.text = name === "cwd"
+				? truncateToWidth(item.text, Math.max(0, visibleWidth(item.text) - overflow()), "…")
+				: "";
+		}
+	}
+	const model = items.find((item) => item.name === "model");
+	if (model && overflow() > 0) {
+		model.text = truncateToWidth(model.text, Math.max(0, visibleWidth(model.text) - overflow()), "…");
+	}
+	// Whole-badge overflow can free more space than needed. Use that space rather
+	// than leaving unnecessarily compact context, paths, or progress on screen.
+	for (const name of ["context", "thinking", "cwd", "progress"] as const) {
+		const item = items.find((item) => item.name === name);
+		const original = segments.find((segment) => segment.name === name);
+		if (!item?.text || !original) continue;
+		const budget = visibleWidth(item.text) - overflow();
+		if (name === "progress") {
+			item.text = truncateToWidth(original.text, Math.max(0, budget), "…");
+		} else {
+			const preferred = [original.text, ...(original.alternatives ?? [])]
+				.find((text) => visibleWidth(text) <= budget);
+			if (preferred !== undefined) item.text = preferred;
+		}
+	}
+	// A terminal narrower than thinking + context cannot show every core value.
+	return truncateToWidth(line(), width, "…");
 }
 
 function thinkingColor(level: string): ThemeColor {
@@ -1566,7 +1663,7 @@ function shouldShowStatus(key: string, filter: StatusFilter): boolean {
 	return !filter.hidden.has(key);
 }
 
-function formatExtensionStatuses(
+export function formatExtensionStatuses(
 	statuses: ReadonlyMap<string, string>,
 	filter: StatusFilter,
 	seenStatusKeys: Set<string>,
@@ -1577,9 +1674,7 @@ function formatExtensionStatuses(
 			seenStatusKeys.add(key);
 			return shouldShowStatus(key, filter);
 		})
-		.map(([key, text]) =>
-			`${stripTerminalControls(key)}:${stripTerminalControls(text)}`,
-		);
+		.map(([, text]) => stripTerminalControls(text));
 
 	return parts.length > 0 ? parts : null;
 }
@@ -1699,6 +1794,9 @@ export default function (pi: ExtensionAPI) {
 	let statusFilter: StatusFilter = { mode: "all", hidden: new Set() };
 	let visibleSegments: SegmentName[] = readGlobalSegments() ?? DEFAULT_SEGMENTS;
 	const seenStatusKeys = new Set<string>();
+	let currentStatuses: ReadonlyMap<string, string> = new Map();
+	const statusDescription = (key: string) =>
+		stripTerminalControls(currentStatuses.get(key) ?? "") || "No current status text";
 	const refresh = () => requestRender?.();
 	const progress = new FooterProgressEngine(refresh);
 	const restoreStatusFilter = (ctx: ExtensionContext) => {
@@ -1783,8 +1881,8 @@ export default function (pi: ExtensionAPI) {
 					},
 					...knownStatusKeys.map((key): SettingItem => ({
 						id: `status:${key}`,
-						label: `Status: ${key}`,
-						description: "Extension status visibility",
+						label: `Status: ${stripTerminalControls(key)}`,
+						description: statusDescription(key),
 						currentValue: statusVisibility.get(key) ? "shown" : "hidden",
 						values: ["shown", "hidden"],
 					})),
@@ -1899,8 +1997,8 @@ export default function (pi: ExtensionAPI) {
 				},
 				...knownStatusKeys.map((key): SettingItem => ({
 					id: key,
-					label: key,
-					description: "Extension status visibility",
+					label: stripTerminalControls(key),
+					description: statusDescription(key),
 					currentValue: statusVisibility.get(key) ? "shown" : "hidden",
 					values: ["shown", "hidden"],
 				})),
@@ -2134,8 +2232,9 @@ export default function (pi: ExtensionAPI) {
 				render(width: number): string[] {
 					const modelName = formatModelName(ctx.model?.id);
 					const thinkingLevel = String(pi.getThinkingLevel());
+					currentStatuses = footerData?.getExtensionStatuses?.() ?? new Map();
 					const extensionStatusParts = formatExtensionStatuses(
-						footerData?.getExtensionStatuses?.() ?? new Map(),
+						currentStatuses,
 						statusFilter,
 						seenStatusKeys,
 					);
@@ -2151,29 +2250,33 @@ export default function (pi: ExtensionAPI) {
 						: "—";
 					const progressText = progress.text();
 
-					const extensionStatuses = extensionStatusParts
-						? extensionStatusParts
-							.map((part) => theme.fg("text", part))
-							.join(` ${theme.fg("dim", EXTENSION_STATUS_SEPARATOR)} `)
-						: null;
-					const segmentRenderers: Record<SegmentName, string | null> = {
-						model: theme.fg("accent", modelName),
-						thinking: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
-						context: theme.fg(contextSegmentColor, contextText),
-						cwd: visibleSegments.includes("cwd")
-							? theme.fg("accent", formatCwd(ctx.cwd, homedir(), Math.min(cwdWidth, width)))
-							: null,
-						progress: progressText ? theme.fg("text", progressText) : null,
-						extensions: extensionStatuses,
+					const directories = visibleSegments.includes("cwd")
+						? cwdVariants(ctx.cwd, homedir(), cwdWidth).map((text) => theme.fg("accent", text))
+						: [];
+					const contextCompact = usage
+						? usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "—%"
+						: "—";
+					const shortThinking = thinkingLevel === "medium" ? "med" : thinkingLevel === "minimal" ? "min" : thinkingLevel;
+					const renderers: Record<SegmentName, Omit<FooterSegment, "name">> = {
+						model: { text: theme.fg("accent", stripTerminalControls(modelName)) },
+						thinking: {
+							text: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
+							alternatives: [theme.fg(thinkingColor(thinkingLevel), `think:${shortThinking}`)],
+						},
+						context: {
+							text: theme.fg(contextSegmentColor, contextText),
+							alternatives: [theme.fg(contextSegmentColor, contextCompact)],
+						},
+						cwd: { text: directories[0] ?? "", alternatives: directories.slice(1) },
+						progress: { text: progressText ? theme.fg("text", progressText) : "" },
+						extensions: { text: "" },
 					};
-
-					const separator = `  ${theme.fg("dim", SEGMENT_SEPARATOR)}  `;
-					const line = visibleSegments
-						.map((segment) => segmentRenderers[segment])
-						.filter((segment): segment is string => segment !== null)
-						.join(separator);
-
-					return [truncateToWidth(line, width)];
+					return [layoutFooter(
+						visibleSegments.map((name) => ({ name, ...renderers[name] })),
+						(extensionStatusParts ?? []).map((part) => theme.fg("text", part)),
+						width,
+						` ${theme.fg("dim", SEGMENT_SEPARATOR)} `,
+					)];
 				},
 			};
 		});
