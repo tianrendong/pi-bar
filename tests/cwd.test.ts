@@ -87,7 +87,7 @@ function harness(cwd: string, statuses = new Map<string, string>()) {
 		hasUI: true,
 		model: { id: "test-model" },
 		getContextUsage: () => undefined,
-		sessionManager: { getBranch: () => [] },
+		sessionManager: { getEntries: () => [], getBranch: () => [] },
 		ui: {
 			notify: () => {},
 			setFooter: (factory: Function | undefined) => {

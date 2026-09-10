@@ -141,6 +141,63 @@ test("extreme widths clip long model names before thinking/context and keep lone
 	}
 });
 
+test("provider prefix compacts inside the model segment and returns on resize", () => {
+	const input: FooterSegment[] = [
+		{ name: "model", text: "openrouter/claude-opus-4.7", alternatives: ["claude-opus-4.7"] },
+		{ name: "thinking", text: "think:max" },
+		{ name: "context", text: "95%" },
+	];
+	assert.equal(layoutFooter(input, [], 100), "openrouter/claude-opus-4.7  ❯  think:max  ❯  95%");
+	const compact = "claude-opus-4.7 ❯ think:max ❯ 95%";
+	assert.equal(layoutFooter(input, [], visibleWidth(compact)), compact);
+	assert.equal(layoutFooter(input, [], 100), "openrouter/claude-opus-4.7  ❯  think:max  ❯  95%");
+});
+
+test("metrics yield whole before core values or extension badges and restore on resize", () => {
+	const metrics: FooterSegment[] = [
+		{ name: "cache_hit_ratio", text: "CH:99.9%" },
+		{ name: "cost", text: "≈$12.345" },
+		{ name: "tokens", text: "↑12k ↓3k" },
+	];
+	const input = [...segments.slice(0, 3), ...metrics, ...segments.slice(3)];
+	const wide = layoutFooter(input, badges, 240);
+	for (let width = 0; width <= 240; width++) {
+		const rendered = layoutFooter(input, badges, width);
+		assert.ok(visibleWidth(rendered) <= width);
+		for (const [metric, marker] of [["CH:99.9%", "CH:"], ["≈$12.345", "≈$"], ["↑12k ↓3k", "↑"]]) {
+			if (rendered.includes(marker)) assert.ok(rendered.includes(metric), `${width}: ${rendered}`);
+		}
+		if (width >= 40) {
+			assert.ok(rendered.includes("claude-opus-4.7"));
+			assert.match(rendered, /think:(medium|med)/);
+			assert.ok(rendered.includes("12.0%"));
+		}
+	}
+	assert.equal(layoutFooter(input, badges, 240), wide);
+	assert.equal(layoutFooter([metrics[2]], [], 4), "", "a partial token total would be misleading");
+});
+
+test("all 512 segment visibility combinations stay bounded with provider and colored metrics", () => {
+	const color = (text: string) => `\x1b[35m${text}\x1b[39m`;
+	const plain: FooterSegment[] = [
+		{ name: "model", text: "openrouter/claude-opus-4.7", alternatives: ["claude-opus-4.7"] },
+		...segments.slice(1, 3),
+		{ name: "cache_hit_ratio", text: "CH:90%" },
+		{ name: "cost", text: "≈$0.123" },
+		{ name: "tokens", text: "↑1.2M ↓33k" },
+		...segments.slice(3),
+	];
+	const input = plain.map((segment) => ({ ...segment, text: color(segment.text), alternatives: segment.alternatives?.map(color) }));
+	for (let mask = 0; mask < 512; mask++) {
+		const selected = input.filter((_, index) => mask & (1 << index));
+		for (const width of [0, 1, 8, 16, 32, 50, 70, 95, 120, 180]) {
+			const rendered = layoutFooter(selected, [color("缓存 90%"), color("👩‍💻 active")], width, color("❯"));
+			assert.ok(visibleWidth(rendered) <= width, `${mask}/${width}: ${JSON.stringify(rendered)}`);
+			assert.doesNotMatch(rendered, /[\r\n\ufffd]/);
+		}
+	}
+});
+
 test("semantic colors survive layout and resizing restores full content", () => {
 	const core: FooterSegment[] = [
 		{ name: "model", text: "\x1b[36mmodel\x1b[39m" },
