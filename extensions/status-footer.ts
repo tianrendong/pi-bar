@@ -169,6 +169,8 @@ function thinkingColor(level: string): ThemeColor {
 		case "xhigh":
 		case "extra-high":
 			return "thinkingXhigh";
+		case "max":
+			return "thinkingMax";
 		default:
 			return "thinkingText";
 	}
