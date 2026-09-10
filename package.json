@@ -1,6 +1,6 @@
 {
   "name": "pi-bar",
-  "version": "0.3.40",
+  "version": "0.3.41",
   "description": "Pi footer/statusline showing active model, thinking level, context pressure, live progress updates, and extension statuses.",
   "type": "module",
   "keywords": [
@@ -52,5 +52,17 @@
       "./extensions/status-footer.ts"
     ],
     "image": "https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-yellow.png"
+  },
+  "scripts": {
+    "test": "tsx --tsconfig tests/tsconfig.json --test tests/*.test.ts",
+    "check": "tsc -p tests/tsconfig.json"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1",
+    "@types/node": "^22.20.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
   }
 }

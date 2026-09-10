@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "baseUrl": "..",
+    "paths": {
+      "@earendil-works/pi-ai": ["node_modules/@earendil-works/pi-ai/dist/compat"]
+    }
+  },
+  "include": ["*.test.ts", "../extensions/status-footer.ts"]
+}
