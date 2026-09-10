@@ -2,7 +2,7 @@
  * pi-bar — footer / statusline extension.
  *
  * Replaces pi's built-in footer with left-aligned segments:
- *   <model> ❯ think:<level> ❯ <context% / window> ❯ [cwd] ❯ <progress> ❯ <extensions>
+ *   <model> ❯ think:<level> ❯ <context% / window> ❯ [metrics] ❯ [cwd] ❯ <progress> ❯ <extensions>
  *
  * Example:
  *   claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure
@@ -21,7 +21,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
-import { complete, type UserMessage } from "@earendil-works/pi-ai";
+import { complete, type Usage, type UserMessage } from "@earendil-works/pi-ai";
 import {
 	getSettingsListTheme,
 	SettingsManager,
@@ -31,13 +31,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	Container,
+	type AutocompleteItem,
 	type SettingItem,
 	SettingsList,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { FooterUsageTracker, hasUsage, PROGRESS_USAGE_ENTRY_TYPE, totalsFromUsage } from "./usage.js";
 
-type SegmentName = "model" | "thinking" | "context" | "cwd" | "progress" | "extensions";
+type SegmentName = "model" | "thinking" | "context" | "cache_hit_ratio" | "cost" | "tokens" | "cwd" | "progress" | "extensions";
 type StatusFilter =
 	| { mode: "all"; hidden: Set<string> }
 	| { mode: "only"; shown: Set<string> };
@@ -47,6 +49,8 @@ type SerializedStatusFilter =
 type GlobalBarConfig = {
 	statusFilter?: SerializedStatusFilter;
 	segments?: SegmentName[];
+	showProvider?: boolean;
+	progressModel?: string;
 };
 type ProgressActivityType =
 	| "user_message"
@@ -120,6 +124,9 @@ const ALL_SEGMENTS: readonly SegmentName[] = [
 	"model",
 	"thinking",
 	"context",
+	"cache_hit_ratio",
+	"cost",
+	"tokens",
 	"cwd",
 	"progress",
 	"extensions",
@@ -128,6 +135,9 @@ const SEGMENT_LABELS: Record<SegmentName, string> = {
 	model: "Model",
 	thinking: "Thinking level",
 	context: "Context usage",
+	cache_hit_ratio: "Cache hit ratio",
+	cost: "Estimated session cost",
+	tokens: "Session token totals",
 	cwd: "Current directory",
 	progress: "Progress update",
 	extensions: "Extension statuses",
@@ -149,10 +159,17 @@ function formatTokens(n: number): string {
 	return `${n}`;
 }
 
-function formatModelName(id: string | undefined): string {
+export function formatModelName(
+	model: { id: string; provider?: string } | undefined,
+	showProvider = false,
+): string {
+	const id = stripTerminalControls(model?.id ?? "");
 	if (!id) return "no-model";
-	const base = id.includes("/") ? (id.split("/").pop() ?? id) : id;
-	return base.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+	const base = id.split("/").filter(Boolean).at(-1) ?? id;
+	const name = base.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+	// The namespace in a model ID is not necessarily its routing provider.
+	const provider = stripTerminalControls(model?.provider ?? "");
+	return showProvider && provider ? `${provider}/${name}` : name;
 }
 
 const DEFAULT_CWD_MAX_WIDTH = 36;
@@ -254,13 +271,19 @@ export function layoutFooter(
 		separator = ` ${divider} `;
 		updateBadges();
 	}
-	for (const name of ["cwd", "context", "thinking"] as const) {
+	for (const name of ["cwd", "context", "thinking", "model"] as const) {
 		const item = items.find((item) => item.name === name);
 		if (!item) continue;
 		for (const alternative of item.alternatives ?? []) {
 			if (overflow() <= 0) break;
 			if (visibleWidth(alternative) < visibleWidth(item.text)) item.text = alternative;
 		}
+	}
+	// Optional metrics yield whole, never leaving a misleading partial number.
+	for (const name of ["tokens", "cost", "cache_hit_ratio"] as const) {
+		if (overflow() <= 0) break;
+		const item = items.find((item) => item.name === name);
+		if (item) item.text = "";
 	}
 	while (extensions && shownBadges > 0 && overflow() > 0) {
 		shownBadges--;
@@ -282,7 +305,7 @@ export function layoutFooter(
 	}
 	// Whole-badge overflow can free more space than needed. Use that space rather
 	// than leaving unnecessarily compact context, paths, or progress on screen.
-	for (const name of ["context", "thinking", "cwd", "progress"] as const) {
+	for (const name of ["model", "context", "thinking", "cwd", "progress"] as const) {
 		const item = items.find((item) => item.name === name);
 		const original = segments.find((segment) => segment.name === name);
 		if (!item?.text || !original) continue;
@@ -380,7 +403,7 @@ function parseThresholds(): { warningThreshold: number; errorThreshold: number }
 
 function parseProgressModelSpec(value: string): ProgressModelPreference | undefined {
 	const trimmed = value.trim();
-	if (!trimmed || trimmed === "auto") return undefined;
+	if (!trimmed || trimmed === "auto" || /[\s\x00-\x1f\x7f-\x9f]/u.test(trimmed)) return undefined;
 	const separator = trimmed.indexOf("/");
 	if (separator <= 0 || separator === trimmed.length - 1) return undefined;
 	return { provider: trimmed.slice(0, separator), id: trimmed.slice(separator + 1) };
@@ -402,9 +425,13 @@ function settingsModelValue(settings: Record<string, unknown>): string | undefin
 	return undefined;
 }
 
-function resolveProgressModelPreference(cwd: string): ProgressModelPreference | undefined {
+export function resolveProgressModelPreference(cwd: string): ProgressModelPreference | undefined {
 	const envModel = process.env.PI_BAR_PROGRESS_MODEL;
 	if (envModel) return parseProgressModelSpec(envModel);
+
+	// An explicit /bar choice wins over legacy Pi settings, including "auto".
+	const savedModel = readGlobalConfig().progressModel;
+	if (savedModel !== undefined) return parseProgressModelSpec(savedModel);
 
 	const settings = SettingsManager.create(cwd);
 	const projectModel = settingsModelValue(
@@ -428,8 +455,64 @@ const FAST_PROGRESS_MODELS: readonly ProgressModelPreference[] = [
 	{ provider: "anthropic", id: "claude-haiku-4-5-20251001" },
 ];
 
-function formatProgressModelKey(model: ProgressModelPreference): string {
-	return `${model.provider}/${model.id}`;
+function formatProgressModelKey(model: ProgressModelPreference | undefined): string {
+	return model ? `${model.provider}/${model.id}` : "auto";
+}
+
+function parseSerializedProgressModel(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	if (value.trim() === "auto") return "auto";
+	const model = parseProgressModelSpec(value);
+	return model ? formatProgressModelKey(model) : undefined;
+}
+
+function createProgressModelPicker(
+	ctx: ExtensionContext,
+	currentValue: string,
+	done: (value?: string) => void,
+): SettingsList {
+	// Availability is a local snapshot of configured credentials, not a key
+	// validation request. Never resolve or display credentials in this UI.
+	const choices = new Map<string, SettingItem>();
+	for (const model of ctx.modelRegistry.getAvailable()) {
+		const key = formatProgressModelKey(model);
+		if (parseSerializedProgressModel(key) !== key) continue;
+		choices.set(key, {
+			id: key,
+			label: key,
+			currentValue: key === currentValue ? "selected" : "",
+			description: `${key} — ${stripTerminalControls(model.name)}. Uses this provider's Pi credentials.`,
+			values: ["selected"],
+		});
+	}
+	const items: SettingItem[] = [{
+		id: "auto",
+		label: "Auto",
+		currentValue: currentValue === "auto" ? "selected" : "",
+		description: choices.size > 0
+			? "Try fast Codex models, then Anthropic Haiku. Choose an openai/ model explicitly to use an OpenAI API key."
+			: "No models with configured credentials. Use /login, then reopen this picker.",
+		values: ["selected"],
+	}];
+	if (currentValue !== "auto" && !choices.has(currentValue)) {
+		items.push({
+			id: currentValue,
+			label: stripTerminalControls(currentValue),
+			currentValue: "unavailable",
+			description: "Current preference is not in Pi's available models. Use /login or choose another model.",
+		});
+	}
+	items.push(...[...choices.values()].sort((a, b) => a.id.localeCompare(b.id)));
+	const picker = new SettingsList(
+		items,
+		Math.min(items.length + 2, 14),
+		getSettingsListTheme(),
+		(id) => done(id),
+		() => done(),
+		{ enableSearch: true },
+	);
+	picker.selectItem(currentValue);
+	return picker;
 }
 
 async function getModelAuth(
@@ -807,10 +890,17 @@ class FooterProgressEngine {
 	private normalCheckpointTimer?: ReturnType<typeof setTimeout>;
 	private normalCheckpointBurstStartedAt?: number;
 
-	constructor(private readonly requestRender: () => void) {}
+	constructor(
+		private readonly requestRender: () => void,
+		private readonly createUsageRecorder: (ctx: ExtensionContext) => (usage: Usage) => void,
+	) {}
 
 	text(): string | null {
 		return this.currentText;
+	}
+
+	modelKey(): string {
+		return formatProgressModelKey(this.configuredModel);
 	}
 
 	startSession(cwd: string): void {
@@ -1058,6 +1148,7 @@ class FooterProgressEngine {
 
 			abortController = new AbortController();
 			this.abortController = abortController;
+			const recordUsage = this.createUsageRecorder(ctx);
 			const response = await complete(
 				auth.model,
 				{ systemPrompt: checkpointSystemPrompt(job), messages: [prompt] },
@@ -1071,6 +1162,9 @@ class FooterProgressEngine {
 					signal: abortController.signal,
 				},
 			);
+			// A superseded/aborted request can still report billed usage. Account for
+			// it even when its text must no longer be displayed.
+			recordUsage(response.usage);
 			if (!this.isCurrentJob(job) || response.stopReason !== "stop") return;
 
 			const rawText = extractTextContent(response.content) ?? "";
@@ -1754,6 +1848,8 @@ function readGlobalConfig(): GlobalBarConfig {
 		return {
 			statusFilter: statusFilter ? serializeStatusFilter(statusFilter) : undefined,
 			segments: parseSerializedSegments(data.segments) ?? undefined,
+			showProvider: typeof data.showProvider === "boolean" ? data.showProvider : undefined,
+			progressModel: parseSerializedProgressModel(data.progressModel),
 		};
 	} catch {
 		return {};
@@ -1786,6 +1882,68 @@ function writeGlobalSegments(segments: readonly SegmentName[]): void {
 	writeGlobalConfig({ ...existing, segments: serializeSegments(segments) });
 }
 
+/** Pi replaces the entire argument prefix, not just its last word. */
+export function completeBarArguments(
+	prefix: string,
+	knownStatusKeys: readonly string[] = [],
+	progressModelKeys: readonly string[] = [],
+): AutocompleteItem[] | null {
+	const words = prefix.trimStart().split(/\s+/);
+	let fragment = words.at(-1) ?? "";
+	let stem = prefix.slice(0, prefix.length - fragment.length);
+	let candidates: readonly string[];
+	let selected: string[] = [];
+	let segmentValues = false;
+	let modelValues = false;
+	const section = words[0];
+	const segmentSection = section === "segments" || section === "segment" || section === "footer";
+	const statusSection = section === "status" || section === "statuses";
+
+	if (words.length === 1) {
+		candidates = ["config", "segments", "status", "provider", "progress-model", "list"];
+	} else if (words.length === 2 && (segmentSection || statusSection)) {
+		candidates = ["list", "all", "none", "only", "show", "hide", "config"];
+	} else if (words.length === 2 && section === "provider") {
+		candidates = ["show", "hide"];
+	} else if (words.length === 2 && section === "progress-model") {
+		modelValues = true;
+		candidates = ["auto", ...[...new Set(progressModelKeys.filter(
+			(key) => typeof key === "string" && key !== "auto" && parseSerializedProgressModel(key) === key,
+		))].sort()];
+	} else if ((segmentSection || statusSection) && ["only", "show", "hide"].includes(words[1])) {
+		const comma = fragment.lastIndexOf(",");
+		const priorValues = fragment.slice(0, comma + 1);
+		stem += priorValues;
+		fragment = fragment.slice(comma + 1);
+		selected = [...words.slice(2, -1), priorValues].join(" ").split(/[\s,]+/).filter(Boolean);
+		segmentValues = segmentSection;
+		// Keys containing delimiters/controls are still configurable in the UI,
+		// but cannot be represented safely by the existing command grammar.
+		candidates = segmentSection ? ALL_SEGMENTS : [...new Set(knownStatusKeys)].filter(
+			(key) => typeof key === "string" && key.length > 0 && !/[\s,\x00-\x1f\x7f-\x9f]/u.test(key),
+		).sort();
+	} else {
+		return null;
+	}
+
+	const normalize = (value: string) => segmentValues || modelValues ? value.toLowerCase() : value;
+	const used = new Set(selected.map(normalize));
+	const query = normalize(fragment);
+	const matches = candidates
+		.filter((value) => {
+			const normalized = normalize(value);
+			return (modelValues ? normalized.includes(query) : normalized.startsWith(query)) && !used.has(normalized);
+		})
+		.map((value) => ({
+			value: `${stem}${value}`,
+			label: value,
+			description: segmentValues && isSegmentName(value) ? SEGMENT_LABELS[value]
+				: modelValues ? value === "auto" ? "Automatic fast-model selection" : "Progress model"
+				: undefined,
+		}));
+	return matches.length > 0 ? matches : null;
+}
+
 function getKnownStatusKeys(filter: StatusFilter, seenStatusKeys: Set<string>): string[] {
 	const keys = new Set(seenStatusKeys);
 	if (filter.mode === "only") {
@@ -1800,12 +1958,36 @@ export default function (pi: ExtensionAPI) {
 	let requestRender: (() => void) | undefined;
 	let statusFilter: StatusFilter = { mode: "all", hidden: new Set() };
 	let visibleSegments: SegmentName[] = readGlobalSegments() ?? DEFAULT_SEGMENTS;
+	let showProvider = readGlobalConfig().showProvider ?? false;
 	const seenStatusKeys = new Set<string>();
 	let currentStatuses: ReadonlyMap<string, string> = new Map();
+	let completionModelRegistry: ExtensionContext["modelRegistry"] | undefined;
 	const statusDescription = (key: string) =>
 		stripTerminalControls(currentStatuses.get(key) ?? "") || "No current status text";
 	const refresh = () => requestRender?.();
-	const progress = new FooterProgressEngine(refresh);
+	const usageTracker = new FooterUsageTracker();
+	const syncUsage = (ctx: ExtensionContext, restoreBranch = false) => {
+		usageTracker.syncEntries(ctx.sessionManager.getEntries());
+		if (restoreBranch) usageTracker.restoreBranch(ctx.sessionManager.getBranch());
+	};
+	let sessionEpoch = 0;
+	let sessionOpen = false;
+	const progress = new FooterProgressEngine(refresh, (ctx) => {
+		const epoch = sessionEpoch;
+		return (usage) => {
+			// Never append a late response into a replacement/reloaded session.
+			if (!sessionOpen || epoch !== sessionEpoch) return;
+			const totals = totalsFromUsage(usage);
+			if (!hasUsage(totals)) return;
+			try {
+				pi.appendEntry(PROGRESS_USAGE_ENTRY_TYPE, totals);
+				syncUsage(ctx);
+				refresh();
+			} catch {
+				// Usage persistence is best effort; do not discard a valid progress update.
+			}
+		};
+	});
 	const restoreStatusFilter = (ctx: ExtensionContext) => {
 		let restoredFilter = readGlobalStatusFilter();
 		if (!restoredFilter) {
@@ -1821,6 +2003,29 @@ export default function (pi: ExtensionAPI) {
 		writeGlobalStatusFilter(statusFilter);
 		refresh();
 	};
+	const setShowProvider = (value: boolean) => {
+		showProvider = value;
+		writeGlobalConfig({ ...readGlobalConfig(), showProvider });
+		refresh();
+	};
+	const setProgressModel = (value: string, ctx: ExtensionContext): boolean => {
+		if (process.env.PI_BAR_PROGRESS_MODEL) {
+			ctx.ui.notify("Progress model is controlled by PI_BAR_PROGRESS_MODEL. Unset it and restart Pi to choose here.", "warning");
+			return false;
+		}
+		const model = parseSerializedProgressModel(value);
+		if (!model) return false;
+		try {
+			writeGlobalConfig({ ...readGlobalConfig(), progressModel: model });
+		} catch {
+			ctx.ui.notify("Could not save the progress model. Check pi-bar config file permissions; selection unchanged.", "error");
+			return false;
+		}
+		// Reset/cancel old-provider jobs, but do not enable a hidden segment.
+		if (visibleSegments.includes("progress") && model !== progress.modelKey()) progress.startSession(ctx.cwd);
+		refresh();
+		return true;
+	};
 	const setVisibleSegments = (segments: readonly SegmentName[], ctx?: ExtensionContext) => {
 		const previousProgressVisible = visibleSegments.includes("progress");
 		visibleSegments = serializeSegments(segments);
@@ -1831,6 +2036,10 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 	};
 	const openSegmentConfigurator = async (ctx: ExtensionContext) => {
+		if (ctx.mode !== "tui") {
+			ctx.ui.notify("/bar configuration requires TUI mode", "warning");
+			return;
+		}
 		await ctx.ui.custom((tui, theme, _kb, done) => {
 			const knownStatusKeys = getKnownStatusKeys(statusFilter, seenStatusKeys);
 			const segmentVisibility = new Map(
@@ -1870,13 +2079,27 @@ export default function (pi: ExtensionAPI) {
 				persistStatusFilter();
 			};
 
-			const segmentItems: SettingItem[] = ALL_SEGMENTS.map((segment): SettingItem => ({
-				id: `segment:${segment}`,
-				label: SEGMENT_LABELS[segment],
-				description: "Footer segment visibility",
-				currentValue: segmentVisibility.get(segment) ? "shown" : "hidden",
-				values: ["shown", "hidden"],
-			}));
+			const segmentItems: SettingItem[] = ALL_SEGMENTS.flatMap((segment): SettingItem[] => {
+				const visibilityItem: SettingItem = {
+					id: `segment:${segment}`,
+					label: SEGMENT_LABELS[segment],
+					description: "Footer segment visibility",
+					currentValue: segmentVisibility.get(segment) ? "shown" : "hidden",
+					values: ["shown", "hidden"],
+				};
+				if (segment !== "progress") return [visibilityItem];
+				return [visibilityItem, {
+					id: "progress-model",
+					label: "Progress model",
+					description: process.env.PI_BAR_PROGRESS_MODEL
+						? "Controlled by PI_BAR_PROGRESS_MODEL (read-only). Unset it and restart Pi to choose here."
+						: "Choose Auto or search models with configured Pi credentials. Saved for all projects; changes only progress updates.",
+					currentValue: formatProgressModelKey(resolveProgressModelPreference(ctx.cwd)),
+					submenu: process.env.PI_BAR_PROGRESS_MODEL
+						? undefined
+						: (currentValue, close) => createProgressModelPicker(ctx, currentValue, close),
+				}];
+			});
 			const statusItems: SettingItem[] = knownStatusKeys.length > 0
 				? [
 					{
@@ -1895,19 +2118,29 @@ export default function (pi: ExtensionAPI) {
 					})),
 				]
 				: [];
-			const items: SettingItem[] = [...segmentItems, ...statusItems];
+			const items: SettingItem[] = [
+				...segmentItems,
+				{
+					id: "show-provider",
+					label: "Show provider",
+					description: "Provider prefix inside the model segment (hidden by default)",
+					currentValue: showProvider ? "shown" : "hidden",
+					values: ["shown", "hidden"],
+				},
+				...statusItems,
+			];
 
 			const container = new Container();
 			container.addChild(
 				new (class {
 					render(_width: number) {
 						return [
-							theme.fg("accent", theme.bold("pi-bar visibility")),
+							theme.fg("accent", theme.bold("pi-bar configuration")),
 							theme.fg(
 								"dim",
 								knownStatusKeys.length > 0
-									? "Footer segments + extension statuses · Enter/Space toggles · Esc closes"
-									: "Footer segments · no extension statuses seen yet · Esc closes",
+									? "Footer settings + extension statuses · Enter/Space changes · Esc closes"
+									: "Footer settings · Enter/Space changes · Esc closes",
 							),
 							"",
 						];
@@ -1921,6 +2154,15 @@ export default function (pi: ExtensionAPI) {
 				Math.min(items.length + 2, 18),
 				getSettingsListTheme(),
 				(id, newValue) => {
+					if (id === "progress-model") {
+						setProgressModel(newValue, ctx);
+						settingsList.updateValue(id, formatProgressModelKey(resolveProgressModelPreference(ctx.cwd)));
+						return;
+					}
+					if (id === "show-provider") {
+						setShowProvider(newValue === "shown");
+						return;
+					}
 					if (id.startsWith("segment:")) {
 						const segment = id.slice("segment:".length);
 						if (!isSegmentName(segment)) return;
@@ -1948,7 +2190,7 @@ export default function (pi: ExtensionAPI) {
 
 			return {
 				render(width: number) {
-					return container.render(width);
+					return container.render(Math.max(8, width)).map((line) => truncateToWidth(line, Math.max(0, width)));
 				},
 				invalidate() {
 					container.invalidate();
@@ -2059,7 +2301,17 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("bar", {
-		description: "Configure pi-bar footer visibility",
+		description: "Configure pi-bar footer",
+		getArgumentCompletions: (prefix) => {
+			let modelKeys: string[] = [];
+			if (/^\s*progress-model\s+\S*$/.test(prefix)) {
+				if (!sessionOpen || process.env.PI_BAR_PROGRESS_MODEL) return null;
+				// Read current local availability only for model arguments, never
+				// refresh catalogs or resolve credentials while the user types.
+				modelKeys = completionModelRegistry?.getAvailable().map(formatProgressModelKey) ?? [];
+			}
+			return completeBarArguments(prefix, getKnownStatusKeys(statusFilter, seenStatusKeys), modelKeys);
+		},
 		handler: async (args, ctx) => {
 			const [section, action, ...rest] = args.trim().split(/\s+/).filter(Boolean);
 			if (!section || section === "config" || section === "configure" || section === "edit") {
@@ -2068,6 +2320,38 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (section === "list" || section === "ls") {
 				ctx.ui.notify(`pi-bar footer: ${describeSegments(visibleSegments)}`, "info");
+				return;
+			}
+
+			if (section === "progress-model") {
+				if (!action) {
+					const value = formatProgressModelKey(resolveProgressModelPreference(ctx.cwd));
+					const override = process.env.PI_BAR_PROGRESS_MODEL ? " (PI_BAR_PROGRESS_MODEL, read-only)" : "";
+					ctx.ui.notify(`pi-bar progress model: ${value}${override}`, "info");
+					return;
+				}
+				const model = parseSerializedProgressModel(action);
+				if (rest.length > 0 || !model) {
+					ctx.ui.notify("Usage: /bar progress-model [auto|provider/model]", "warning");
+					return;
+				}
+				if (!process.env.PI_BAR_PROGRESS_MODEL && model !== "auto" && !ctx.modelRegistry.getAvailable().some(
+					(available) => formatProgressModelKey(available) === model,
+				)) {
+					ctx.ui.notify("Progress model unavailable. Use /login or choose a configured model with Tab.", "warning");
+					return;
+				}
+				if (setProgressModel(model, ctx)) ctx.ui.notify(`pi-bar progress model: ${model}`, "info");
+				return;
+			}
+
+			if (section === "provider") {
+				if (rest.length > 0 || (action !== undefined && action !== "show" && action !== "hide")) {
+					ctx.ui.notify("Usage: /bar provider [show|hide]", "warning");
+					return;
+				}
+				if (action) setShowProvider(action === "show");
+				ctx.ui.notify(`pi-bar provider prefix: ${showProvider ? "shown" : "hidden"}`, "info");
 				return;
 			}
 
@@ -2182,7 +2466,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			ctx.ui.notify(
-				"Usage: /bar [config] or /bar segments [list|all|none|only <segments>|show <segments>|hide <segments>] or /bar status [list|all|none|only <keys>|show <keys>|hide <keys>]",
+				"Usage: /bar [config] or /bar segments [list|all|none|only <segments>|show <segments>|hide <segments>] or /bar status [list|all|none|only <keys>|show <keys>|hide <keys>] or /bar provider [show|hide] or /bar progress-model [auto|provider/model]",
 				"warning",
 			);
 		},
@@ -2190,7 +2474,11 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("model_select", async () => refresh());
 	pi.on("thinking_level_select", async () => refresh());
-	pi.on("turn_end", async () => refresh());
+	// message_end runs before persistence and allows later handlers to replace
+	// usage. Read finalized entries at the synchronized lifecycle boundaries.
+	pi.on("turn_end", async (_event, ctx) => { syncUsage(ctx); refresh(); });
+	pi.on("agent_end", async (_event, ctx) => { syncUsage(ctx); refresh(); });
+	pi.on("session_compact", async (_event, ctx) => { syncUsage(ctx); refresh(); });
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (visibleSegments.includes("progress")) progress.recordUserMessage(ctx, event.prompt);
 	});
@@ -2198,7 +2486,9 @@ export default function (pi: ExtensionAPI) {
 		if (visibleSegments.includes("progress")) progress.recordAssistantUpdate(ctx, event.message);
 	});
 	pi.on("tool_call", async (event, ctx) => {
+		syncUsage(ctx);
 		if (visibleSegments.includes("progress")) progress.recordToolCall(ctx, event);
+		refresh();
 	});
 	pi.on("tool_result", async (event, ctx) => {
 		if (visibleSegments.includes("progress")) progress.recordToolResult(ctx, event);
@@ -2214,11 +2504,21 @@ export default function (pi: ExtensionAPI) {
 		if (visibleSegments.includes("progress")) progress.startSession(ctx.cwd);
 		else progress.shutdown();
 		restoreStatusFilter(ctx);
+		showProvider = readGlobalConfig().showProvider ?? false;
+		syncUsage(ctx, true);
 		refresh();
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		sessionEpoch++;
+		sessionOpen = true;
+		completionModelRegistry = ctx.modelRegistry;
+		usageTracker.reset();
+		syncUsage(ctx, true);
+		currentStatuses = new Map();
+		seenStatusKeys.clear();
 		visibleSegments = readGlobalSegments() ?? DEFAULT_SEGMENTS;
+		showProvider = readGlobalConfig().showProvider ?? false;
 		if (visibleSegments.includes("progress")) progress.startSession(ctx.cwd);
 		else progress.shutdown();
 		restoreStatusFilter(ctx);
@@ -2237,7 +2537,9 @@ export default function (pi: ExtensionAPI) {
 				},
 				invalidate() {},
 				render(width: number): string[] {
-					const modelName = formatModelName(ctx.model?.id);
+					const modelName = formatModelName(ctx.model, showProvider);
+					const metrics = usageTracker.snapshot();
+					const reportedUsage = hasUsage(metrics);
 					const thinkingLevel = String(pi.getThinkingLevel());
 					currentStatuses = footerData?.getExtensionStatuses?.() ?? new Map();
 					const extensionStatusParts = formatExtensionStatuses(
@@ -2265,7 +2567,10 @@ export default function (pi: ExtensionAPI) {
 						: "—";
 					const shortThinking = thinkingLevel === "medium" ? "med" : thinkingLevel === "minimal" ? "min" : thinkingLevel;
 					const renderers: Record<SegmentName, Omit<FooterSegment, "name">> = {
-						model: { text: theme.fg("accent", stripTerminalControls(modelName)) },
+						model: {
+							text: theme.fg("accent", modelName),
+							alternatives: showProvider ? [theme.fg("accent", formatModelName(ctx.model))] : [],
+						},
 						thinking: {
 							text: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
 							alternatives: [theme.fg(thinkingColor(thinkingLevel), `think:${shortThinking}`)],
@@ -2274,6 +2579,11 @@ export default function (pi: ExtensionAPI) {
 							text: theme.fg(contextSegmentColor, contextText),
 							alternatives: [theme.fg(contextSegmentColor, contextCompact)],
 						},
+						cache_hit_ratio: {
+							text: metrics.cacheHitRate === null ? "" : theme.fg("muted", `CH:${metrics.cacheHitRate.toFixed(1).replace(/\.0$/, "")}%`),
+						},
+						cost: { text: reportedUsage ? theme.fg("muted", `≈$${metrics.cost.toFixed(3)}`) : "" },
+						tokens: { text: reportedUsage ? theme.fg("muted", `↑${formatTokens(metrics.input)} ↓${formatTokens(metrics.output)}`) : "" },
 						cwd: { text: directories[0] ?? "", alternatives: directories.slice(1) },
 						progress: { text: progressText ? theme.fg("text", progressText) : "" },
 						extensions: { text: "" },
@@ -2290,6 +2600,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		sessionOpen = false;
+		completionModelRegistry = undefined;
+		sessionEpoch++;
 		progress.shutdown();
 		if (ctx.hasUI) ctx.ui.setFooter(undefined);
 	});
