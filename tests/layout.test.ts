@@ -29,8 +29,37 @@ test("status text is display-ready, sanitized, and filtered by original keys", (
 	assert.equal(formatExtensionStatuses(statuses, { mode: "only", shown: new Set() }, seen), null);
 });
 
-test("wide layout preserves full segments and complete badges in order", () => {
-	assert.equal(layoutFooter(segments, badges, 240), [...segments.slice(0, -1).map((s) => s.text), ...badges].join(" ❯ "));
+test("wide layout preserves full segments and complete badges with roomy spacing", () => {
+	assert.equal(layoutFooter(segments, badges, 240), [...segments.slice(0, -1).map((s) => s.text), ...badges].join("  ❯  "));
+});
+
+test("screenshot layout uses two-space gaps, tightening only under width pressure", () => {
+	const input: FooterSegment[] = [
+		{ name: "model", text: "gpt-6-astra" },
+		{ name: "thinking", text: "think:max" },
+		{ name: "context", text: "59.8% / 272k", alternatives: ["59.8%"] },
+		{ name: "cwd", text: "~/pi/pi-chrome", alternatives: ["pi/pi-chrome", "pi-chrome"] },
+	];
+	const roomy = input.map((segment) => segment.text).join("  ❯  ");
+	const compact = input.map((segment) => segment.text).join(" ❯ ");
+	const width = visibleWidth(roomy);
+	assert.equal(layoutFooter(input, [], width), roomy);
+	assert.equal(layoutFooter(input, [], width - 1), compact);
+	assert.equal(layoutFooter(input, [], visibleWidth(compact)), compact);
+	assert.equal(layoutFooter(input, [], width), roomy, "resize restores spacing without changing settings");
+});
+
+test("flexible progress shrinks without squeezing gaps when fixed segments fit", () => {
+	const input: FooterSegment[] = [
+		{ name: "model", text: "model" },
+		{ name: "progress", text: "Reviewing ".repeat(100) },
+		{ name: "extensions", text: "" },
+	];
+	const rendered = layoutFooter(input, ["MCP: 2/2", "Plan active"], 60);
+	assert.ok(rendered.startsWith("model  ❯  Reviewing"));
+	assert.ok(rendered.endsWith("  ❯  MCP: 2/2  ❯  Plan active"));
+	assert.ok(rendered.includes("…"));
+	assert.ok(visibleWidth(rendered) <= 60);
 });
 
 test("long progress shrinks before directory, context, or badges", () => {
@@ -88,7 +117,7 @@ test("all widths stay bounded with Unicode, ANSI colors and every visibility com
 	for (let mask = 0; mask < 64; mask++) {
 		const input = unicodeSegments.filter((_, index) => mask & (1 << index));
 		for (let width = 0; width <= 180; width++) {
-			const rendered = layoutFooter(input, coloredBadges, width, color(" ❯ "));
+			const rendered = layoutFooter(input, coloredBadges, width, color("❯"));
 			assert.ok(visibleWidth(rendered) <= width, `${mask}/${width}: ${JSON.stringify(rendered)}`);
 			assert.doesNotMatch(rendered, /[\r\n\ufffd]/);
 		}

@@ -156,7 +156,8 @@ test("footer uses display-ready badges, overflows whole statuses, and preserves 
 	]);
 	const first = harness("/project", statuses);
 	await first.start();
-	assert.equal(first.render(), "MCP: 2/2 ❯ Plan active");
+	assert.equal(first.render(), "MCP: 2/2  ❯  Plan active");
+	assert.equal(first.render(23), "MCP: 2/2 ❯ Plan active");
 	assert.equal(first.render(14), "MCP: 2/2 ❯ +1");
 	assert.equal(first.render(8), "+2");
 	await first.command("status hide internal-mcp-key");
@@ -168,9 +169,9 @@ test("footer uses display-ready badges, overflows whole statuses, and preserves 
 	await reloaded.start();
 	assert.equal(reloaded.render(), "Plan active");
 	await reloaded.command("status show internal-mcp-key");
-	assert.equal(reloaded.render(), "MCP: 2/2 ❯ Plan active");
+	assert.equal(reloaded.render(), "MCP: 2/2  ❯  Plan active");
 	statuses.set("internal-plan-key", "Plan done");
-	assert.equal(reloaded.render(), "MCP: 2/2 ❯ Plan done");
+	assert.equal(reloaded.render(), "MCP: 2/2  ❯  Plan done");
 	await reloaded.command("segments none");
 	assert.equal(reloaded.render(), "");
 	await reloaded.shutdown();
