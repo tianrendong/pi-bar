@@ -1,6 +1,6 @@
 {
   "name": "pi-bar",
-  "version": "0.3.44",
+  "version": "0.3.45",
   "description": "Pi footer/statusline showing active model, thinking level, context pressure, live progress updates, and extension statuses.",
   "type": "module",
   "keywords": [

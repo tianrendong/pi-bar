@@ -140,8 +140,38 @@ const SEGMENT_LABELS: Record<SegmentName, string> = {
 	tokens: "Session token totals",
 	cwd: "Current directory",
 	progress: "Progress update",
-	extensions: "Extension statuses",
+	extensions: "Extension badges",
 };
+const SEGMENT_DESCRIPTIONS: Record<SegmentName, string> = {
+	model: "Show the current chat model's name. This does not change your model.",
+	thinking: "Show the current thinking level, with its usual color.",
+	context: "Show context usage and the model's context window.",
+	cache_hit_ratio: "Show the latest response's prompt cache-hit rate. Hidden until prompt usage is available.",
+	cost: "Show estimated recorded session cost, not an invoice. Hidden until usage is available.",
+	tokens: "Show recorded input and output token totals, including cache usage.",
+	cwd: "Show this session's directory, not the directory of a tool's shell.",
+	progress: "Show live activity updates. Uses extra model calls; choose the progress model below.",
+	extensions: "Show badges published by other extensions. Choose individual badges below.",
+};
+// Advertise tasks, not the legacy command groups. Old spellings still work.
+const BAR_COMMAND_DESCRIPTIONS = new Map([
+	["settings", "Open all footer settings"],
+	["show", "Show footer items"],
+	["hide", "Hide footer items"],
+	["badges", "Choose extension badges"],
+	["provider", "Show or hide provider prefix"],
+	["progress-model", "Choose progress model"],
+	["help", "Commands and examples"],
+]);
+const BAR_ACTION_DESCRIPTIONS = new Map([
+	["show", "Show selected items"],
+	["hide", "Hide selected items"],
+	["only", "Show only selected items"],
+	["all", "Show all items"],
+	["none", "Hide all items"],
+	["list", "Inspect visibility without changing it"],
+	["settings", "Open visibility settings"],
+]);
 const DEFAULT_WARNING_THRESHOLD = 70;
 const DEFAULT_ERROR_THRESHOLD = 90;
 
@@ -355,6 +385,19 @@ function contextColor(
 	if (percent >= errorThreshold) return "error";
 	if (percent >= warningThreshold) return "warning";
 	return "success";
+}
+
+// Cache hit ratio is "higher is better", the inverse of context usage. A healthy
+// multi-turn conversation typically reads 90%+ of its prompt from cache; below
+// 50% means most of the prompt was billed as fresh input (a mostly-miss turn).
+const CACHE_HIT_GOOD_THRESHOLD = 90;
+const CACHE_HIT_POOR_THRESHOLD = 50;
+
+function cacheHitColor(percent: number | null | undefined): ThemeColor {
+	if (percent === null || percent === undefined) return "muted";
+	if (percent >= CACHE_HIT_GOOD_THRESHOLD) return "success";
+	if (percent >= CACHE_HIT_POOR_THRESHOLD) return "warning";
+	return "error";
 }
 
 function isSegmentName(value: string): value is SegmentName {
@@ -1834,11 +1877,11 @@ function describeSegments(segments: readonly SegmentName[]): string {
 function describeStatusFilter(filter: StatusFilter): string {
 	if (filter.mode === "only") {
 		const shown = Array.from(filter.shown).sort();
-		return shown.length > 0 ? `showing only: ${shown.join(", ")}` : "showing none";
+		return shown.length > 0 ? `showing only: ${shown.map(stripTerminalControls).join(", ")}` : "showing none";
 	}
 
 	const hidden = Array.from(filter.hidden).sort();
-	return hidden.length > 0 ? `showing all except: ${hidden.join(", ")}` : "showing all";
+	return hidden.length > 0 ? `showing all except: ${hidden.map(stripTerminalControls).join(", ")}` : "showing all";
 }
 
 function readGlobalConfig(): GlobalBarConfig {
@@ -1894,15 +1937,17 @@ export function completeBarArguments(
 	let candidates: readonly string[];
 	let selected: string[] = [];
 	let segmentValues = false;
+	let badgeValues = false;
 	let modelValues = false;
 	const section = words[0];
+	const directVisibility = section === "show" || section === "hide";
 	const segmentSection = section === "segments" || section === "segment" || section === "footer";
-	const statusSection = section === "status" || section === "statuses";
+	const statusSection = section === "badges" || section === "status" || section === "statuses";
 
 	if (words.length === 1) {
-		candidates = ["config", "segments", "status", "provider", "progress-model", "list"];
+		candidates = [...BAR_COMMAND_DESCRIPTIONS.keys()];
 	} else if (words.length === 2 && (segmentSection || statusSection)) {
-		candidates = ["list", "all", "none", "only", "show", "hide", "config"];
+		candidates = [...BAR_ACTION_DESCRIPTIONS.keys()];
 	} else if (words.length === 2 && section === "provider") {
 		candidates = ["show", "hide"];
 	} else if (words.length === 2 && section === "progress-model") {
@@ -1910,22 +1955,34 @@ export function completeBarArguments(
 		candidates = ["auto", ...[...new Set(progressModelKeys.filter(
 			(key) => typeof key === "string" && key !== "auto" && parseSerializedProgressModel(key) === key,
 		))].sort()];
-	} else if ((segmentSection || statusSection) && ["only", "show", "hide"].includes(words[1])) {
+	} else if (directVisibility || ((segmentSection || statusSection) && ["only", "show", "hide"].includes(words[1]))) {
 		const comma = fragment.lastIndexOf(",");
 		const priorValues = fragment.slice(0, comma + 1);
 		stem += priorValues;
 		fragment = fragment.slice(comma + 1);
-		selected = [...words.slice(2, -1), priorValues].join(" ").split(/[\s,]+/).filter(Boolean);
-		segmentValues = segmentSection;
+		selected = [...words.slice(directVisibility ? 1 : 2, -1), priorValues].join(" ").split(/[\s,]+/).filter(Boolean);
+		segmentValues = directVisibility || segmentSection;
+		badgeValues = !segmentValues;
 		// Keys containing delimiters/controls are still configurable in the UI,
 		// but cannot be represented safely by the existing command grammar.
-		candidates = segmentSection ? ALL_SEGMENTS : [...new Set(knownStatusKeys)].filter(
-			(key) => typeof key === "string" && key.length > 0 && !/[\s,\x00-\x1f\x7f-\x9f]/u.test(key),
-		).sort();
+		if (directVisibility && selected.some((value) => value.toLowerCase() === "all")) return null;
+		candidates = segmentValues
+			? [...(directVisibility && selected.length === 0 ? ["all"] : []), ...ALL_SEGMENTS]
+			: [...new Set(knownStatusKeys)].filter(
+				(key) => typeof key === "string" && key.length > 0 && !/[\s,\x00-\x1f\x7f-\x9f]/u.test(key),
+			).sort();
 	} else {
 		return null;
 	}
 
+	const description = (value: string): string | undefined => {
+		if (words.length === 1) return BAR_COMMAND_DESCRIPTIONS.get(value);
+		if (segmentValues) return value === "all" ? "All footer items" : isSegmentName(value) ? SEGMENT_LABELS[value] : undefined;
+		if (badgeValues) return "Extension badge";
+		if (modelValues) return value === "auto" ? "Automatic fast-model selection" : "Progress model";
+		if (section === "provider") return `${value === "show" ? "Show" : "Hide"} provider prefix`;
+		return BAR_ACTION_DESCRIPTIONS.get(value);
+	};
 	const normalize = (value: string) => segmentValues || modelValues ? value.toLowerCase() : value;
 	const used = new Set(selected.map(normalize));
 	const query = normalize(fragment);
@@ -1934,13 +1991,7 @@ export function completeBarArguments(
 			const normalized = normalize(value);
 			return (modelValues ? normalized.includes(query) : normalized.startsWith(query)) && !used.has(normalized);
 		})
-		.map((value) => ({
-			value: `${stem}${value}`,
-			label: value,
-			description: segmentValues && isSegmentName(value) ? SEGMENT_LABELS[value]
-				: modelValues ? value === "auto" ? "Automatic fast-model selection" : "Progress model"
-				: undefined,
-		}));
+		.map((value) => ({ value: `${stem}${value}`, label: value, description: description(value) }));
 	return matches.length > 0 ? matches : null;
 }
 
@@ -2035,265 +2086,167 @@ export default function (pi: ExtensionAPI) {
 		if (!previousProgressVisible && nextProgressVisible && ctx) progress.startSession(ctx.cwd);
 		refresh();
 	};
-	const openSegmentConfigurator = async (ctx: ExtensionContext) => {
+	const setBadgeVisibility = (key: string, shown: boolean) => {
+		if (statusFilter.mode === "all") {
+			if (shown) statusFilter.hidden.delete(key);
+			else statusFilter.hidden.add(key);
+		} else {
+			if (shown) statusFilter.shown.add(key);
+			else statusFilter.shown.delete(key);
+		}
+	};
+	const badgeSummary = () => {
+		const keys = getKnownStatusKeys(statusFilter, seenStatusKeys);
+		const enabled = keys.filter((key) => shouldShowStatus(key, statusFilter)).length;
+		return keys.length > 0 ? `${enabled}/${keys.length} enabled` : "No badges yet";
+	};
+	const savedSettingsTheme = (exit: "close" | "go back") => {
+		const theme = getSettingsListTheme();
+		return {
+			...theme,
+			// These toggles save immediately; Esc is not an undo operation.
+			hint: (text: string) => theme.hint(text.replace("Esc to cancel", `Esc to ${exit}`)),
+		};
+	};
+	const createBadgeSettings = (onClose: () => void, exit: "close" | "go back") => {
+		const knownKeys = getKnownStatusKeys(statusFilter, seenStatusKeys);
+		const theme = savedSettingsTheme(exit);
+		const items: SettingItem[] = [
+			{
+				id: "default:future",
+				label: "New badges",
+				description: "Default for badges discovered later. Existing badge choices stay unchanged.",
+				currentValue: statusFilter.mode === "all" ? "shown" : "hidden",
+				values: ["shown", "hidden"],
+			},
+			...knownKeys.map((key): SettingItem => ({
+				id: `badge:${key}`,
+				label: `Badge: ${stripTerminalControls(key)}`,
+				description: statusDescription(key),
+				currentValue: shouldShowStatus(key, statusFilter) ? "shown" : "hidden",
+				values: ["shown", "hidden"],
+			})),
+		];
+		const settings = new SettingsList(items, Math.min(items.length + 2, 15), theme, (id, value) => {
+			if (id === "default:future") {
+				const keys = getKnownStatusKeys(statusFilter, seenStatusKeys);
+				statusFilter = value === "shown"
+					? { mode: "all", hidden: new Set(keys.filter((key) => !shouldShowStatus(key, statusFilter))) }
+					: { mode: "only", shown: new Set(keys.filter((key) => shouldShowStatus(key, statusFilter))) };
+			} else {
+				setBadgeVisibility(id.slice("badge:".length), value === "shown");
+			}
+			persistStatusFilter();
+		}, onClose, { enableSearch: true });
+		return {
+			render(width: number) {
+				return [
+					theme.label("Extension badges", true),
+					theme.hint(knownKeys.length > 0
+						? "Choose badges by key; select a row to preview its text."
+						: "No badges yet. Extensions publish them while you work."),
+					theme.hint("Changes save immediately."),
+					...(!visibleSegments.includes("extensions")
+						? [theme.hint("All badges are hidden. Use /bar show extensions to display them.")]
+						: []),
+					"",
+					...settings.render(Math.max(8, width)),
+				].map((line) => truncateToWidth(line, Math.max(0, width)));
+			},
+			invalidate() { settings.invalidate(); },
+			handleInput(data: string) { settings.handleInput(data); },
+		};
+	};
+	const openSettings = async (ctx: ExtensionContext) => {
 		if (ctx.mode !== "tui") {
-			ctx.ui.notify("/bar configuration requires TUI mode", "warning");
+			ctx.ui.notify("/bar settings requires TUI mode", "warning");
 			return;
 		}
 		await ctx.ui.custom((tui, theme, _kb, done) => {
-			const knownStatusKeys = getKnownStatusKeys(statusFilter, seenStatusKeys);
-			const segmentVisibility = new Map(
-				ALL_SEGMENTS.map(
-					(segment): [SegmentName, boolean] => [segment, visibleSegments.includes(segment)],
-				),
-			);
-			let futureShown = statusFilter.mode === "all";
-			const statusVisibility = new Map(
-				knownStatusKeys.map((key): [string, boolean] => [
-					key,
-					shouldShowStatus(key, statusFilter),
-				]),
-			);
-			const persistSegmentsFromVisibility = () => {
-				setVisibleSegments(
-					ALL_SEGMENTS.filter((segment) => segmentVisibility.get(segment)),
-					ctx,
-				);
-			};
-			const persistStatusesFromVisibility = () => {
-				if (futureShown) {
-					statusFilter = {
-						mode: "all",
-						hidden: new Set(
-							knownStatusKeys.filter((key) => !statusVisibility.get(key)),
-						),
-					};
-				} else {
-					statusFilter = {
-						mode: "only",
-						shown: new Set(
-							knownStatusKeys.filter((key) => statusVisibility.get(key)),
-						),
-					};
-				}
-				persistStatusFilter();
-			};
-
-			const segmentItems: SettingItem[] = ALL_SEGMENTS.flatMap((segment): SettingItem[] => {
-				const visibilityItem: SettingItem = {
+			const items = ALL_SEGMENTS.flatMap((segment): SettingItem[] => {
+				const group: SettingItem[] = [{
 					id: `segment:${segment}`,
 					label: SEGMENT_LABELS[segment],
-					description: "Footer segment visibility",
-					currentValue: segmentVisibility.get(segment) ? "shown" : "hidden",
+					description: SEGMENT_DESCRIPTIONS[segment],
+					currentValue: visibleSegments.includes(segment) ? "shown" : "hidden",
 					values: ["shown", "hidden"],
-				};
-				if (segment !== "progress") return [visibilityItem];
-				return [visibilityItem, {
+				}];
+				if (segment === "model") group.push({
+					id: "show-provider",
+					label: "Show provider",
+					description: "Prefix the model name with its provider. Only visible when Model is shown.",
+					currentValue: showProvider ? "shown" : "hidden",
+					values: ["shown", "hidden"],
+				});
+				if (segment === "progress") group.push({
 					id: "progress-model",
 					label: "Progress model",
 					description: process.env.PI_BAR_PROGRESS_MODEL
 						? "Controlled by PI_BAR_PROGRESS_MODEL (read-only). Unset it and restart Pi to choose here."
-						: "Choose Auto or search models with configured Pi credentials. Saved for all projects; changes only progress updates.",
+						: "Choose Auto or search models with configured Pi credentials. Changes only progress updates, not the chat model.",
 					currentValue: formatProgressModelKey(resolveProgressModelPreference(ctx.cwd)),
 					submenu: process.env.PI_BAR_PROGRESS_MODEL
 						? undefined
 						: (currentValue, close) => createProgressModelPicker(ctx, currentValue, close),
-				}];
+				});
+				if (segment === "extensions") group.push({
+					id: "badge-settings",
+					label: "Choose badges",
+					description: "Choose individual badges from other extensions. They display only when Extension badges is shown.",
+					currentValue: badgeSummary(),
+					submenu: (_currentValue, close) => createBadgeSettings(() => close(badgeSummary()), "go back"),
+				});
+				return group;
 			});
-			const statusItems: SettingItem[] = knownStatusKeys.length > 0
-				? [
-					{
-						id: "status:__future",
-						label: "New extension statuses",
-						description: "Default visibility for status keys discovered later",
-						currentValue: futureShown ? "shown" : "hidden",
-						values: ["shown", "hidden"],
-					},
-					...knownStatusKeys.map((key): SettingItem => ({
-						id: `status:${key}`,
-						label: `Status: ${stripTerminalControls(key)}`,
-						description: statusDescription(key),
-						currentValue: statusVisibility.get(key) ? "shown" : "hidden",
-						values: ["shown", "hidden"],
-					})),
-				]
-				: [];
-			const items: SettingItem[] = [
-				...segmentItems,
-				{
-					id: "show-provider",
-					label: "Show provider",
-					description: "Provider prefix inside the model segment (hidden by default)",
-					currentValue: showProvider ? "shown" : "hidden",
-					values: ["shown", "hidden"],
-				},
-				...statusItems,
-			];
-
 			const container = new Container();
-			container.addChild(
-				new (class {
-					render(_width: number) {
-						return [
-							theme.fg("accent", theme.bold("pi-bar configuration")),
-							theme.fg(
-								"dim",
-								knownStatusKeys.length > 0
-									? "Footer settings + extension statuses · Enter/Space changes · Esc closes"
-									: "Footer settings · Enter/Space changes · Esc closes",
-							),
-							"",
-						];
-					}
-					invalidate() {}
-				})(),
-			);
-
-			const settingsList = new SettingsList(
-				items,
-				Math.min(items.length + 2, 18),
-				getSettingsListTheme(),
-				(id, newValue) => {
-					if (id === "progress-model") {
-						setProgressModel(newValue, ctx);
-						settingsList.updateValue(id, formatProgressModelKey(resolveProgressModelPreference(ctx.cwd)));
-						return;
-					}
-					if (id === "show-provider") {
-						setShowProvider(newValue === "shown");
-						return;
-					}
-					if (id.startsWith("segment:")) {
-						const segment = id.slice("segment:".length);
-						if (!isSegmentName(segment)) return;
-						segmentVisibility.set(segment, newValue === "shown");
-						persistSegmentsFromVisibility();
-						return;
-					}
-
-					if (id === "status:__future") {
-						futureShown = newValue === "shown";
-						persistStatusesFromVisibility();
-						return;
-					}
-
-					if (id.startsWith("status:")) {
-						statusVisibility.set(id.slice("status:".length), newValue === "shown");
-						persistStatusesFromVisibility();
-					}
-				},
-				() => done(undefined),
-				{ enableSearch: true },
-			);
-
-			container.addChild(settingsList);
-
+			container.addChild(new (class {
+				render(_width: number) {
+					return [
+						theme.fg("accent", theme.bold("pi-bar settings")),
+						theme.fg("dim", "Choose what appears in your footer. Changes save immediately."),
+						"",
+					];
+				}
+				invalidate() {}
+			})());
+			const settings = new SettingsList(items, Math.min(items.length + 2, 18), savedSettingsTheme("close"), (id, value) => {
+				if (id === "progress-model") {
+					setProgressModel(value, ctx);
+					settings.updateValue(id, formatProgressModelKey(resolveProgressModelPreference(ctx.cwd)));
+				} else if (id === "show-provider") {
+					setShowProvider(value === "shown");
+				} else if (id.startsWith("segment:")) {
+					const segment = id.slice("segment:".length);
+					if (!isSegmentName(segment)) return;
+					setVisibleSegments(value === "shown"
+						? [...visibleSegments, segment]
+						: visibleSegments.filter((item) => item !== segment), ctx);
+				}
+			}, () => done(undefined), { enableSearch: true });
+			container.addChild(settings);
 			return {
 				render(width: number) {
 					return container.render(Math.max(8, width)).map((line) => truncateToWidth(line, Math.max(0, width)));
 				},
-				invalidate() {
-					container.invalidate();
-				},
+				invalidate() { container.invalidate(); },
 				handleInput(data: string) {
-					settingsList.handleInput?.(data);
+					settings.handleInput(data);
 					tui.requestRender();
 				},
 			};
 		});
 	};
-	const openStatusConfigurator = async (ctx: ExtensionContext) => {
-		const knownStatusKeys = getKnownStatusKeys(statusFilter, seenStatusKeys);
-		if (knownStatusKeys.length === 0) {
-			ctx.ui.notify(
-				"No extension statuses seen yet. Open /bar after another extension calls ctx.ui.setStatus().",
-				"info",
-			);
+	const openBadges = async (ctx: ExtensionContext) => {
+		if (ctx.mode !== "tui") {
+			ctx.ui.notify("/bar badges requires TUI mode", "warning");
 			return;
 		}
-
-		await ctx.ui.custom((tui, theme, _kb, done) => {
-			let futureShown = statusFilter.mode === "all";
-			const statusVisibility = new Map(
-				knownStatusKeys.map((key) => [key, shouldShowStatus(key, statusFilter)]),
-			);
-			const persistFromVisibility = () => {
-				if (futureShown) {
-					statusFilter = {
-						mode: "all",
-						hidden: new Set(
-							knownStatusKeys.filter((key) => !statusVisibility.get(key)),
-						),
-					};
-				} else {
-					statusFilter = {
-						mode: "only",
-						shown: new Set(
-							knownStatusKeys.filter((key) => statusVisibility.get(key)),
-						),
-					};
-				}
-				persistStatusFilter();
-			};
-
-			const items: SettingItem[] = [
-				{
-					id: "__future",
-					label: "New statuses",
-					description: "Default visibility for status keys discovered later",
-					currentValue: futureShown ? "shown" : "hidden",
-					values: ["shown", "hidden"],
-				},
-				...knownStatusKeys.map((key): SettingItem => ({
-					id: key,
-					label: stripTerminalControls(key),
-					description: statusDescription(key),
-					currentValue: statusVisibility.get(key) ? "shown" : "hidden",
-					values: ["shown", "hidden"],
-				})),
-			];
-
-			const container = new Container();
-			container.addChild(
-				new (class {
-					render(_width: number) {
-						return [
-							theme.fg("accent", theme.bold("pi-bar status visibility")),
-							theme.fg("dim", "Enter/Space toggles · Esc closes"),
-							"",
-						];
-					}
-					invalidate() {}
-				})(),
-			);
-
-			const settingsList = new SettingsList(
-				items,
-				Math.min(items.length + 2, 15),
-				getSettingsListTheme(),
-				(id, newValue) => {
-					if (id === "__future") {
-						futureShown = newValue === "shown";
-					} else {
-						statusVisibility.set(id, newValue === "shown");
-					}
-					persistFromVisibility();
-				},
-				() => done(undefined),
-				{ enableSearch: true },
-			);
-
-			container.addChild(settingsList);
-
+		await ctx.ui.custom((tui, _theme, _kb, done) => {
+			const settings = createBadgeSettings(() => done(undefined), "close");
 			return {
-				render(width: number) {
-					return container.render(width);
-				},
-				invalidate() {
-					container.invalidate();
-				},
+				...settings,
 				handleInput(data: string) {
-					settingsList.handleInput?.(data);
+					settings.handleInput(data);
 					tui.requestRender();
 				},
 			};
@@ -2301,7 +2254,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("bar", {
-		description: "Configure pi-bar footer",
+		description: "Open footer settings; choose what appears in the bar",
 		getArgumentCompletions: (prefix) => {
 			let modelKeys: string[] = [];
 			if (/^\s*progress-model\s+\S*$/.test(prefix)) {
@@ -2313,13 +2266,53 @@ export default function (pi: ExtensionAPI) {
 			return completeBarArguments(prefix, getKnownStatusKeys(statusFilter, seenStatusKeys), modelKeys);
 		},
 		handler: async (args, ctx) => {
-			const [section, action, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-			if (!section || section === "config" || section === "configure" || section === "edit") {
-				await openSegmentConfigurator(ctx);
+			const words = args.trim().split(/\s+/).filter(Boolean);
+			if (words[0] === "show" || words[0] === "hide") {
+				const names = splitStatusKeys(words.slice(1).join(" ")).map((name) => name.toLowerCase());
+				if (names.includes("all")) {
+					if (names.length !== 1) {
+						ctx.ui.notify("Use all by itself: /bar show all or /bar hide all.", "warning");
+						return;
+					}
+					words.splice(0, words.length, "segments", words[0] === "show" ? "all" : "none");
+				} else {
+					const unknown = names.filter((name) => !isSegmentName(name));
+					if (unknown.length > 0) {
+						ctx.ui.notify(`Unknown footer items: ${unknown.map(stripTerminalControls).join(", ")}. Use Tab to choose items.`, "warning");
+						return;
+					}
+					words.unshift("segments");
+				}
+			}
+			if (words[0] === "badges") {
+				if (["show", "hide", "only"].includes(words[1]) && splitStatusKeys(words.slice(2).join(" ")).length === 0) {
+					ctx.ui.notify("Choose badge keys with Tab, or open /bar badges to choose them interactively.", "warning");
+					return;
+				}
+				words[0] = "status";
+			}
+			const [section, action, ...rest] = words;
+			if (!section || section === "settings" || section === "config" || section === "configure" || section === "edit") {
+				await openSettings(ctx);
 				return;
 			}
 			if (section === "list" || section === "ls") {
 				ctx.ui.notify(`pi-bar footer: ${describeSegments(visibleSegments)}`, "info");
+				return;
+			}
+			if (section === "help") {
+				ctx.ui.notify([
+					"Open /bar for all footer settings. Changes save immediately.",
+					"",
+					...Array.from(BAR_COMMAND_DESCRIPTIONS, ([name, description]) => `/bar ${name} — ${description}`),
+					"",
+					"Examples: /bar show cost tokens · /bar hide progress · /bar badges hide mcp",
+					"Use /bar show all or /bar hide all to change every footer item.",
+					`Footer items: ${ALL_SEGMENTS.join(", ")}`,
+					`Current configuration: ${describeSegments(visibleSegments)}`,
+					"Enabled items may wait for data or yield under width pressure.",
+					"Old commands still work: /bar config, /bar segments, /bar status, /bar list.",
+				].join("\n"), "info");
 				return;
 			}
 
@@ -2359,7 +2352,7 @@ export default function (pi: ExtensionAPI) {
 				const segments = splitSegmentNames(rest.join(" "));
 				if ((action === "only" || action === "show" || action === "hide") && segments.length === 0) {
 					ctx.ui.notify(
-						`Segments: ${ALL_SEGMENTS.join(", ")}`,
+						`Footer items: ${ALL_SEGMENTS.join(", ")}. Use Tab to choose.`,
 						"warning",
 					);
 					return;
@@ -2367,10 +2360,11 @@ export default function (pi: ExtensionAPI) {
 
 				switch (action) {
 					case undefined:
+					case "settings":
 					case "config":
 					case "configure":
 					case "edit":
-						await openSegmentConfigurator(ctx);
+						await openSettings(ctx);
 						return;
 					case "list":
 					case "ls":
@@ -2396,7 +2390,7 @@ export default function (pi: ExtensionAPI) {
 						break;
 					default:
 						ctx.ui.notify(
-							"Usage: /bar [config] or /bar segments [list|all|none|only <segments>|show <segments>|hide <segments>]",
+							"Use /bar show <items> or /bar hide <items>. Open /bar for all settings.",
 							"warning",
 						);
 						return;
@@ -2407,7 +2401,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if ((section === "status" || section === "statuses") && !action) {
-				await openStatusConfigurator(ctx);
+				await openBadges(ctx);
 				return;
 			}
 
@@ -2415,16 +2409,17 @@ export default function (pi: ExtensionAPI) {
 				const keys = splitStatusKeys(rest.join(" "));
 
 				switch (action) {
+					case "settings":
 					case "config":
 					case "configure":
 					case "edit":
-						await openStatusConfigurator(ctx);
+						await openBadges(ctx);
 						return;
 					case "list":
 					case "ls": {
 						const known = getKnownStatusKeys(statusFilter, seenStatusKeys);
 						ctx.ui.notify(
-							`pi-bar statuses: ${describeStatusFilter(statusFilter)}${known.length > 0 ? `; known: ${known.join(", ")}` : "; known: none yet"}`,
+							`pi-bar badges: ${describeStatusFilter(statusFilter)}${known.length > 0 ? `; known: ${known.map(stripTerminalControls).join(", ")}` : "; known: none yet"}`,
 							"info",
 						);
 						return;
@@ -2439,34 +2434,24 @@ export default function (pi: ExtensionAPI) {
 						statusFilter = { mode: "only", shown: new Set(keys) };
 						break;
 					case "hide":
-						if (statusFilter.mode === "only") {
-							for (const key of keys) statusFilter.shown.delete(key);
-						} else {
-							for (const key of keys) statusFilter.hidden.add(key);
-						}
-						break;
 					case "show":
-						if (statusFilter.mode === "only") {
-							for (const key of keys) statusFilter.shown.add(key);
-						} else {
-							for (const key of keys) statusFilter.hidden.delete(key);
-						}
+						for (const key of keys) setBadgeVisibility(key, action === "show");
 						break;
 					default:
 						ctx.ui.notify(
-							"Usage: /bar status [list|all|none|only <keys>|show <keys>|hide <keys>]",
+							"Open /bar badges to choose badges, or use /bar badges show|hide <keys>.",
 							"warning",
 						);
 						return;
 				}
 
 				persistStatusFilter();
-				ctx.ui.notify(`pi-bar statuses: ${describeStatusFilter(statusFilter)}`, "info");
+				ctx.ui.notify(`pi-bar badges: ${describeStatusFilter(statusFilter)}`, "info");
 				return;
 			}
 
 			ctx.ui.notify(
-				"Usage: /bar [config] or /bar segments [list|all|none|only <segments>|show <segments>|hide <segments>] or /bar status [list|all|none|only <keys>|show <keys>|hide <keys>] or /bar provider [show|hide] or /bar progress-model [auto|provider/model]",
+				"Unknown /bar command. Open /bar for settings or /bar help for examples.",
 				"warning",
 			);
 		},
@@ -2580,7 +2565,7 @@ export default function (pi: ExtensionAPI) {
 							alternatives: [theme.fg(contextSegmentColor, contextCompact)],
 						},
 						cache_hit_ratio: {
-							text: metrics.cacheHitRate === null ? "" : theme.fg("muted", `CH:${metrics.cacheHitRate.toFixed(1).replace(/\.0$/, "")}%`),
+							text: metrics.cacheHitRate === null ? "" : theme.fg(cacheHitColor(metrics.cacheHitRate), `CH:${metrics.cacheHitRate.toFixed(1).replace(/\.0$/, "")}%`),
 						},
 						cost: { text: reportedUsage ? theme.fg("muted", `≈$${metrics.cost.toFixed(3)}`) : "" },
 						tokens: { text: reportedUsage ? theme.fg("muted", `↑${formatTokens(metrics.input)} ↓${formatTokens(metrics.output)}`) : "" },

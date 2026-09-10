@@ -252,7 +252,7 @@ test("Progress model sits directly below Progress update, whether progress is sh
 		assert.ok(progressIndex >= 0);
 		assert.match(lines[progressIndex], enabled ? /shown/ : /hidden/);
 		assert.match(lines[progressIndex + 1], /Progress model\s+openai\/gpt-4\.1-mini/);
-		assert.match(lines[progressIndex + 2], /Extension statuses/);
+		assert.match(lines[progressIndex + 2], /Extension badges/);
 		assert.equal(lines.filter((line) => line.includes("Progress model")).length, 1);
 		h.input("\x1b");
 		await closed;
