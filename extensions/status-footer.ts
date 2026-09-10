@@ -2,7 +2,7 @@
  * pi-bar — footer / statusline extension.
  *
  * Replaces pi's built-in footer with left-aligned segments:
- *   <model> ❯ think:<level> ❯ <context% / window> ❯ <progress> ❯ <extensions>
+ *   <model> ❯ think:<level> ❯ <context% / window> ❯ [cwd] ❯ <progress> ❯ <extensions>
  *
  * Example:
  *   claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure
@@ -15,11 +15,12 @@
  *   PI_BAR_THRESHOLDS     warning,danger context-usage percentages
  *   PI_BAR_PROGRESS_MODEL provider/id for the progress update model
  *   PI_BAR_CONFIG         override the persisted pi-bar config path
+ *   PI_BAR_CWD_MAX_WIDTH  maximum cwd segment width in terminal columns (default 36)
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { complete, type UserMessage } from "@earendil-works/pi-ai";
 import {
 	getSettingsListTheme,
@@ -33,9 +34,10 @@ import {
 	type SettingItem,
 	SettingsList,
 	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 
-type SegmentName = "model" | "thinking" | "context" | "progress" | "extensions";
+type SegmentName = "model" | "thinking" | "context" | "cwd" | "progress" | "extensions";
 type StatusFilter =
 	| { mode: "all"; hidden: Set<string> }
 	| { mode: "only"; shown: Set<string> };
@@ -75,7 +77,7 @@ type ProgressModelPreference = { provider: string; id: string };
 type FastModelAuth = {
 	model: Parameters<typeof complete>[0];
 	apiKey: string;
-	headers?: Record<string, string>;
+	headers?: NonNullable<Parameters<typeof complete>[2]>["headers"];
 };
 
 const STATUS_FILTER_ENTRY_TYPE = "pi-bar-status-filter";
@@ -118,6 +120,7 @@ const ALL_SEGMENTS: readonly SegmentName[] = [
 	"model",
 	"thinking",
 	"context",
+	"cwd",
 	"progress",
 	"extensions",
 ];
@@ -125,6 +128,7 @@ const SEGMENT_LABELS: Record<SegmentName, string> = {
 	model: "Model",
 	thinking: "Thinking level",
 	context: "Context usage",
+	cwd: "Current directory",
 	progress: "Progress update",
 	extensions: "Extension statuses",
 };
@@ -150,6 +154,45 @@ function formatModelName(id: string | undefined): string {
 	if (!id) return "no-model";
 	const base = id.includes("/") ? (id.split("/").pop() ?? id) : id;
 	return base.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+}
+
+const DEFAULT_CWD_MAX_WIDTH = 36;
+
+export function parseCwdMaxWidth(raw: string | undefined): number {
+	const value = raw?.trim() ?? "";
+	const width = /^\d+$/.test(value) ? Number(value) : NaN;
+	return Number.isSafeInteger(width) && width >= 8 ? width : DEFAULT_CWD_MAX_WIDTH;
+}
+
+/** Format the session directory, preserving the leaf when middle components fit poorly. */
+export function formatCwd(
+	cwd: string,
+	home = homedir(),
+	maxWidth = DEFAULT_CWD_MAX_WIDTH,
+	paths = process.platform === "win32" ? win32 : posix,
+): string {
+	if (maxWidth <= 0) return "";
+	if (!cwd) return truncateToWidth("—", maxWidth);
+
+	const relative = home ? paths.relative(home, cwd) : undefined;
+	const insideHome = relative !== undefined &&
+		!paths.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${paths.sep}`);
+	const prefix = insideHome ? `~${paths.sep}` : paths.parse(cwd).root;
+	const tail = insideHome ? relative! : cwd.slice(prefix.length);
+	const display = stripTerminalControls(insideHome ? (tail ? `${prefix}${tail}` : "~") : cwd);
+	if (visibleWidth(display) <= maxWidth) return display;
+
+	const parts = tail.split(paths.sep).filter(Boolean);
+	if (parts.length < 2) return truncateToWidth(display, maxWidth);
+
+	// Keep as many trailing directories as the column budget allows.
+	let compact = stripTerminalControls(`${prefix}…${paths.sep}${parts.at(-1)}`);
+	for (let index = parts.length - 2; index > 0; index--) {
+		const candidate = stripTerminalControls(`${prefix}…${paths.sep}${parts.slice(index).join(paths.sep)}`);
+		if (visibleWidth(candidate) > maxWidth) break;
+		compact = candidate;
+	}
+	return truncateToWidth(compact, maxWidth);
 }
 
 function thinkingColor(level: string): ThemeColor {
@@ -2078,6 +2121,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 
 		const { warningThreshold, errorThreshold } = parseThresholds();
+		const cwdWidth = parseCwdMaxWidth(process.env.PI_BAR_CWD_MAX_WIDTH);
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			requestRender = () => tui.requestRender();
@@ -2116,6 +2160,9 @@ export default function (pi: ExtensionAPI) {
 						model: theme.fg("accent", modelName),
 						thinking: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
 						context: theme.fg(contextSegmentColor, contextText),
+						cwd: visibleSegments.includes("cwd")
+							? theme.fg("accent", formatCwd(ctx.cwd, homedir(), Math.min(cwdWidth, width)))
+							: null,
 						progress: progressText ? theme.fg("text", progressText) : null,
 						extensions: extensionStatuses,
 					};

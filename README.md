@@ -43,7 +43,7 @@ pi-bar works out of the box. Run `/bar` inside pi to choose which footer segment
 /bar
 ```
 
-Toggle `Model`, `Thinking level`, `Context usage`, `Progress update`, and `Extension statuses` between `shown` and `hidden`. If other extensions have published status badges, `/bar` also shows fine-grained `Status: <key>` rows plus a `New extension statuses` default. You can also use commands:
+Toggle `Model`, `Thinking level`, `Context usage`, `Current directory`, `Progress update`, and `Extension statuses` between `shown` and `hidden`. If other extensions have published status badges, `/bar` also shows fine-grained `Status: <key>` rows plus a `New extension statuses` default. You can also use commands:
 
 ```text
 /bar segments list
@@ -52,7 +52,7 @@ Toggle `Model`, `Thinking level`, `Context usage`, `Progress update`, and `Exten
 /bar segments show thinking
 ```
 
-Allowed segments are `model`, `thinking`, `context`, `progress`, and `extensions`. The `progress` segment stays hidden until pi-bar has a current update. The `extensions` segment stays hidden when no extension has set a status.
+Allowed segments are `model`, `thinking`, `context`, `cwd`, `progress`, and `extensions`. The `cwd` segment is off by default. The `progress` segment stays hidden until pi-bar has a current update. The `extensions` segment stays hidden when no extension has set a status.
 
 You can also set startup defaults with environment variables before launching pi:
 
@@ -60,6 +60,30 @@ You can also set startup defaults with environment variables before launching pi
 PI_BAR_SHOW=model,thinking,context,progress,extensions pi
 PI_BAR_SHOW=model,context pi
 ```
+
+### Show the session directory
+
+Enable the optional `cwd` segment to distinguish projects and sessions:
+
+```text
+/bar segments show cwd
+```
+
+Or set startup segments with `PI_BAR_SHOW=model,thinking,context,cwd,progress,extensions`.
+
+```text
+claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  ~/projects/pi-bar
+```
+
+Your home directory becomes `~`. Long paths omit middle directories, retaining trailing directory names where possible. The segment is capped at 36 terminal columns, including wide Unicode characters. Override the cap before starting pi:
+
+```bash
+PI_BAR_CWD_MAX_WIDTH=48 pi
+```
+
+The cap must be an integer of at least 8; invalid values use 36. Very long directory names are truncated. Paths are stripped of terminal controls before display.
+
+This is Pi's session working directory (`ctx.cwd`), not a live shell directory: `cd` inside a tool command does not change it. Visibility persists through the existing `/bar` configuration.
 
 ### Configure live progress updates
 
@@ -97,6 +121,16 @@ The first number is the warning/yellow threshold. The second number is the dange
 
 - **[pi-chrome](https://www.npmjs.com/package/pi-chrome)** — give your Pi agent your real, signed-in Chrome. Use pi-bar's red-context threshold as the signal to wrap up long browser scrapes before context overflows.
 - **[pi-qq](https://www.npmjs.com/package/pi-qq)** — ask side questions about what the agent just did without polluting the transcript.
+
+## Development
+
+```bash
+npm ci --ignore-scripts
+npm test
+npm run check
+```
+
+Tests cover path formatting, terminal safety, width limits, and segment visibility/persistence. Test configuration mirrors Pi's `pi-ai/compat` loader alias; runtime dependencies remain optional peers supplied by Pi.
 
 ## Security note
 
