@@ -43,7 +43,7 @@ The footer adapts to terminal width without extra configuration:
 - Separators have two spaces on each side by default, for a roomier display.
 - Progress text shrinks first. If space is still tight, separator padding reduces to one space per side before compacting content. CWD then compacts from its preferred path to `parent/project`, then `project`; context window size is omitted when needed. An enabled provider prefix can yield before the model name is clipped.
 - Optional token totals, cost, and cache-hit ratio yield whole under width pressure, before overflowing extension badges. Numeric metrics are never shown partially.
-- Extension badges stay in their published order. Badges that cannot fit are hidden whole, with `+N` showing how many are behind the overflow. Open `/bar status` to inspect their text and visibility by key.
+- Extension badges stay in their published order. Badges that cannot fit are hidden whole, with `+N` showing how many are behind the overflow. Open `/bar badges` to inspect their text and visibility by key.
 - On very narrow terminals, progress and CWD yield to core information. If even the core cannot fit, the model name is truncated first. At extreme widths, not every value or overflow count can remain visible.
 - Widening the terminal restores the full display. Thinking and context retain their semantic colors throughout.
 
@@ -51,24 +51,42 @@ Existing visibility settings still apply. CWD, usage metrics, and the provider p
 
 ## Customization
 
-pi-bar works out of the box. Run `/bar` inside pi to choose which footer segments and extension statuses are shown:
+**Start with `/bar`.** It opens all footer settings; you do not need to learn command groups.
 
 ```text
 /bar
 ```
 
-Toggle `Model`, `Thinking level`, `Context usage`, `Cache hit ratio`, `Estimated session cost`, `Session token totals`, `Current directory`, `Progress update`, and `Extension statuses` between `shown` and `hidden`. `Show provider` controls the optional prefix inside the model segment. `Progress model` opens a searchable model picker. If other extensions have published status badges, `/bar` also shows fine-grained `Status: <key>` rows plus a `New extension statuses` default. You can also use commands:
+Type to find a setting, then press Enter/Space to change it. Changes save immediately; Esc closes the screen rather than undoing them.
+
+Related settings stay together:
+- **Model → Show provider:** model visibility and its optional provider prefix.
+- **Progress update → Progress model:** progress visibility and a searchable model picker.
+- **Extension badges → Choose badges:** overall badge visibility and a separate screen for individual badges. Badge lists do not crowd the main settings panel. Esc from that screen returns to settings.
+
+For quick changes, Tab offers action-oriented commands with short explanations:
+
+| Command | Purpose |
+| --- | --- |
+| `/bar settings` | Open all settings, just like `/bar`. |
+| `/bar show <items>` | Show footer items. |
+| `/bar hide <items>` | Hide footer items. |
+| `/bar badges` | Choose badges published by other extensions. |
+| `/bar provider [show\|hide]` | Show, hide, or inspect the provider prefix. |
+| `/bar progress-model [auto\|provider/model]` | Choose or inspect the progress model. |
+| `/bar help` | Show commands, examples, and current visibility settings. |
 
 ```text
-/bar segments list
-/bar segments only model context
-/bar segments hide progress
-/bar segments show thinking
+/bar hide progress
+/bar show cost tokens
+/bar badges hide mcp
 ```
 
-Allowed segments are `model`, `thinking`, `context`, `cache_hit_ratio`, `cost`, `tokens`, `cwd`, `progress`, and `extensions`. The `cwd`, `cache_hit_ratio`, `cost`, and `tokens` segments are off by default. The `progress` segment stays hidden until pi-bar has a current update. The `extensions` segment stays hidden when no extension has set a status.
+Footer item names are `model`, `thinking`, `context`, `cache_hit_ratio`, `cost`, `tokens`, `cwd`, `progress`, and `extensions`. Use `/bar show all` or `/bar hide all` to change all footer items at once. `cwd`, `cache_hit_ratio`, `cost`, and `tokens` are off by default. Enabled items can still be invisible while waiting for data or when terminal space is tight.
 
-Tab completes `/bar` subcommands, actions, segment names, known status keys, and configured progress-model IDs. Completion preserves preceding arguments, including comma-separated lists such as `/bar segments show model,ca`.
+Tab completes item names, badge keys, and configured progress-model IDs while preserving preceding arguments, including comma-separated lists such as `/bar show model,ca`.
+
+**Existing commands still work:** `/bar config`, `/bar segments ...`, `/bar status ...`, and `/bar list` are compatibility aliases, not additional choices in the top-level menu. `/bar list` and `/bar segments list` only report enabled footer items. Advanced commands such as `/bar segments only model context` remain available.
 
 You can also set startup defaults with environment variables before launching pi:
 
@@ -82,7 +100,7 @@ PI_BAR_SHOW=model,context pi
 Enable the optional `cwd` segment to distinguish projects and sessions:
 
 ```text
-/bar segments show cwd
+/bar show cwd
 ```
 
 Or set startup segments with `PI_BAR_SHOW=model,thinking,context,cwd,progress,extensions`.
@@ -123,10 +141,10 @@ The prefix uses the actual model provider, not a namespace embedded in the model
 
 ### Show cache, cost, and token metrics
 
-Enable any of the optional metrics through `/bar` or the existing segment commands:
+Enable any of the optional metrics through `/bar` or the quick visibility commands:
 
 ```text
-/bar segments show cache_hit_ratio cost tokens
+/bar show cache_hit_ratio cost tokens
 ```
 
 ```text
@@ -135,7 +153,7 @@ claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  CH:84%  ❯  ≈$0.123  
 
 | Segment | Meaning |
 | --- | --- |
-| `cache_hit_ratio` | Latest active-branch assistant prompt's cache-read percentage: `cacheRead / (input + cacheRead + cacheWrite)`. Hidden when that response has no reported prompt usage. Restored on resume and `/tree`; tool, summary, and progress calls do not replace this value. |
+| `cache_hit_ratio` | Latest active-branch assistant prompt's cache-read percentage: `cacheRead / (input + cacheRead + cacheWrite)`. Hidden when that response has no reported prompt usage. Colored green at 90% or higher, yellow from 50% up to 90%, and red below 50% (mostly cache misses). Restored on resume and `/tree`; tool, summary, and progress calls do not replace this value. |
 | `cost` | Estimated dollar cost for recorded usage in the current session file. `≈` means an estimate, **not an invoice**. |
 | `tokens` | Cumulative input (`↑`, including cache reads and writes) and output (`↓`, including reported reasoning tokens). These are usage totals, not current context size or tokens/sec. |
 
@@ -147,7 +165,7 @@ Prices come from the usage estimates Pi/providers report. Subscription allowance
 
 ### Configure live progress updates
 
-pi-bar shows a short, plain-English description of what pi is working on right now. It refreshes as pi works and resets when you switch branches in the session tree, so stale updates never follow you across tasks. Hide `Progress update` in `/bar`, run `/bar segments hide progress`, or set `PI_BAR_SHOW` without `progress` to disable it.
+pi-bar shows a short, plain-English description of what pi is working on right now. It refreshes as pi works and resets when you switch branches in the session tree, so stale updates never follow you across tasks. Hide `Progress update` in `/bar`, run `/bar hide progress`, or set `PI_BAR_SHOW` without `progress` to disable it.
 
 **Pick a model interactively:** open `/bar`, select `Progress model` directly below `Progress update`, and press Enter. Type a provider or model ID (for example `gpt`), then press Enter to select. Esc cancels without changing the preference. The picker shows models with configured Pi credentials and an `Auto` option; it does not validate keys or make model requests.
 
@@ -173,17 +191,19 @@ PI_BAR_PROGRESS_MODEL=openai/gpt-4.1-mini pi
 
 Preference order: `PI_BAR_PROGRESS_MODEL` → saved pi-bar `progressModel` → project Pi settings → global Pi settings → Auto. Within each Pi settings scope, `bar.progressModel` takes precedence over the legacy `progress.model` setting. A nonempty environment override makes both the picker and command read-only and suppresses model-value completion; unset it and restart Pi to choose another model. A saved `"auto"` explicitly enables automatic selection rather than falling back to Pi settings. Remove `progressModel` from the pi-bar config to use Pi settings again.
 
-### Configure extension statuses
+### Configure extension badges
 
 Other pi extensions can publish small status badges. Pi-bar displays their text as written, without prepending internal keys: `setStatus("mcp", "MCP: 2/2 servers")` appears as `MCP: 2/2 servers`, not `mcp:MCP: 2/2 servers`. Extensions should publish self-describing text; pi-bar does not guess labels for bare values.
 
-Pi-bar strips embedded terminal colors and control sequences, and separates each badge with the same `❯` divider used by other footer segments. Keys remain available for filtering and identification in `/bar`; selecting a status row shows its current sanitized text. Run `/bar` or `/bar status` inside pi to inspect statuses or pick which ones to show:
+Pi-bar strips embedded terminal colors and control sequences, and separates each badge with the same `❯` divider used by other footer segments. Keys remain available for filtering and identification. Open `/bar` → `Choose badges`, or use the shortcut:
 
 ```text
-/bar status
+/bar badges
 ```
 
-Toggle each status between `shown` and `hidden`. The `New statuses` row controls the default for badges that appear later.
+Each `Badge: <key>` row shows its current sanitized text when selected. Toggle badges between `shown` and `hidden`; the `New badges` row controls the default for badges discovered later without changing existing choices. An empty screen explains that extensions have not published badges yet, while still letting you set that default.
+
+These choices do not enable a hidden `Extension badges` footer item. Use `/bar show extensions` to display the badge area. `/bar badges show <keys>` and `/bar badges hide <keys>` are command shortcuts; the older `/bar status ...` spellings also work.
 
 Your choices persist across pi sessions in `~/.pi/agent/pi-bar.json`. Override the path with `PI_BAR_CONFIG=/some/path.json`.
 
@@ -208,7 +228,7 @@ npm test
 npm run check
 ```
 
-Tests cover path formatting, display-ready statuses, responsive layout, all 512 segment visibility combinations, terminal safety, ANSI/Unicode widths, provider settings, progress-model selection, command completion, usage accounting, progress-call persistence, session/tree lifecycle, and config persistence. Test configuration mirrors Pi's `pi-ai/compat` loader alias; runtime dependencies remain optional peers supplied by Pi.
+Tests cover path formatting, display-ready statuses, responsive layout, all 512 segment visibility combinations, terminal safety, ANSI/Unicode widths, provider settings, progress-model selection, menu navigation, command completion and legacy aliases, usage accounting, progress-call persistence, session/tree lifecycle, and config persistence. Test configuration mirrors Pi's `pi-ai/compat` loader alias; runtime dependencies remain optional peers supplied by Pi.
 
 ## Security note
 

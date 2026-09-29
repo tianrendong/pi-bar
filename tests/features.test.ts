@@ -101,7 +101,7 @@ function harness(initialEntries: SessionEntry[] = [], statuses = new Map<string,
 const values = (prefix: string, keys: string[] = []) => completeBarArguments(prefix, keys)?.map((item) => item.value) ?? [];
 
 test("autocomplete handles sections, aliases, actions and provider choices", () => {
-	assert.deepEqual(values(""), ["config", "segments", "status", "provider", "progress-model", "list"]);
+	assert.deepEqual(values(""), ["settings", "show", "hide", "badges", "provider", "progress-model", "help"]);
 	assert.deepEqual(values("pro"), ["provider", "progress-model"]);
 	assert.deepEqual(values("segments sh"), ["segments show"]);
 	assert.deepEqual(values("segment h"), ["segment hide"]);
