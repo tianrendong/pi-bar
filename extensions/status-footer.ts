@@ -2,10 +2,10 @@
  * pi-bar — footer / statusline extension.
  *
  * Replaces pi's built-in footer with left-aligned segments:
- *   <model> ❯ think:<level> ❯ <context% / window> ❯ [metrics] ❯ [cwd] ❯ <progress> ❯ <extensions>
+ *   <model> ❯ <level> ❯ <context% / window> ❯ [metrics] ❯ [cwd] ❯ <progress> ❯ <extensions>
  *
  * Example:
- *   claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure
+ *   claude-opus-4.7  ❯  med  ❯  2.6% / 1.0M  ❯  Reviewing package structure
  *
  * Re-renders on model change, thinking-level change, status updates, and after
  * each assistant turn so context usage stays current.
@@ -2557,8 +2557,8 @@ export default function (pi: ExtensionAPI) {
 							alternatives: showProvider ? [theme.fg("accent", formatModelName(ctx.model))] : [],
 						},
 						thinking: {
-							text: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
-							alternatives: [theme.fg(thinkingColor(thinkingLevel), `think:${shortThinking}`)],
+							text: theme.fg(thinkingColor(thinkingLevel), thinkingLevel),
+							alternatives: [theme.fg(thinkingColor(thinkingLevel), shortThinking)],
 						},
 						context: {
 							text: theme.fg(contextSegmentColor, contextText),
