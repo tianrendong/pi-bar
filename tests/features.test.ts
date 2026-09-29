@@ -238,7 +238,7 @@ test("metrics are opt-in, restore historical usage, persist and never walk histo
 	const entry = messageEntry("a", assistant(makeUsage({ input: 10, cacheRead: 90, cacheWrite: 100, output: 25, cost: 0.123 })));
 	const h = harness([entry]);
 	await h.start();
-	assert.equal(h.render(), "test-model  ❯  think:medium  ❯  12.0% / 200k");
+	assert.equal(h.render(), "test-model  ❯  medium  ❯  12.0% / 200k");
 	await h.command("segments only cache_hit_ratio cost tokens");
 	assert.equal(h.render(), "CH:45%  ❯  ≈$0.123  ❯  ↑200 ↓25");
 	const reads = h.reads();

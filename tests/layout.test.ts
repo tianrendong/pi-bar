@@ -6,7 +6,7 @@ import { cwdVariants, formatExtensionStatuses, layoutFooter, type FooterSegment 
 
 const segments: FooterSegment[] = [
 	{ name: "model", text: "claude-opus-4.7" },
-	{ name: "thinking", text: "think:medium", alternatives: ["think:med"] },
+	{ name: "thinking", text: "medium", alternatives: ["med"] },
 	{ name: "context", text: "12.0% / 1.0M", alternatives: ["12.0%"] },
 	{ name: "cwd", text: "~/projects/pi/pi-bar", alternatives: ["pi/pi-bar", "pi-bar"] },
 	{ name: "progress", text: "Fixing footer layout and reviewing regression coverage" },
@@ -36,7 +36,7 @@ test("wide layout preserves full segments and complete badges with roomy spacing
 test("screenshot layout uses two-space gaps, tightening only under width pressure", () => {
 	const input: FooterSegment[] = [
 		{ name: "model", text: "gpt-6-astra" },
-		{ name: "thinking", text: "think:max" },
+		{ name: "thinking", text: "max" },
 		{ name: "context", text: "59.8% / 272k", alternatives: ["59.8%"] },
 		{ name: "cwd", text: "~/pi/pi-chrome", alternatives: ["pi/pi-chrome", "pi-chrome"] },
 	];
@@ -64,8 +64,8 @@ test("flexible progress shrinks without squeezing gaps when fixed segments fit",
 
 test("long progress shrinks before directory, context, or badges", () => {
 	const input = segments.map((s) => s.name === "progress" ? { ...s, text: "Reviewing ".repeat(100) } : s);
-	const rendered = layoutFooter(input, badges, 130);
-	assert.ok(visibleWidth(rendered) <= 130);
+	const rendered = layoutFooter(input, badges, 124);
+	assert.ok(visibleWidth(rendered) <= 124);
 	assert.match(rendered, /12\.0% \/ 1\.0M/);
 	assert.match(rendered, /~\/projects\/pi\/pi-bar/);
 	assert.ok(rendered.endsWith(badges.join(" ❯ ")));
@@ -74,11 +74,11 @@ test("long progress shrinks before directory, context, or badges", () => {
 });
 
 test("narrow layout protects core values and counts whole trailing badges", () => {
-	for (const width of [50, 60, 70, 80, 90]) {
+	for (const width of [44, 54, 64, 74, 84]) {
 		const rendered = layoutFooter(segments, badges, width);
 		assert.ok(visibleWidth(rendered) <= width);
 		assert.match(rendered, /claude-opus-4\.7/);
-		assert.match(rendered, /think:(medium|med)/);
+		assert.match(rendered, /(medium|med)/);
 		assert.match(rendered, /12\.0%/);
 		const present = badges.filter((badge) => rendered.includes(badge));
 		assert.deepEqual(present, badges.slice(0, present.length));
@@ -129,12 +129,12 @@ test("all widths stay bounded with Unicode, ANSI colors and every visibility com
 test("extreme widths clip long model names before thinking/context and keep lone flexible segments useful", () => {
 	const input: FooterSegment[] = [
 		{ name: "model", text: "very-long-model-name-".repeat(20) },
-		{ name: "thinking", text: "think:max" },
+		{ name: "thinking", text: "max" },
 		{ name: "context", text: "95%" },
 	];
 	const rendered = layoutFooter(input, [], 40);
 	assert.ok(visibleWidth(rendered) <= 40);
-	assert.ok(rendered.endsWith("think:max ❯ 95%"));
+	assert.ok(rendered.endsWith("max ❯ 95%"));
 	for (const name of ["cwd", "progress"] as const) {
 		const result = layoutFooter([{ name, text: "long-project-or-progress" }], [], 8);
 		assert.ok(visibleWidth(result) > 0 && visibleWidth(result) <= 8);
@@ -144,13 +144,13 @@ test("extreme widths clip long model names before thinking/context and keep lone
 test("provider prefix compacts inside the model segment and returns on resize", () => {
 	const input: FooterSegment[] = [
 		{ name: "model", text: "openrouter/claude-opus-4.7", alternatives: ["claude-opus-4.7"] },
-		{ name: "thinking", text: "think:max" },
+		{ name: "thinking", text: "max" },
 		{ name: "context", text: "95%" },
 	];
-	assert.equal(layoutFooter(input, [], 100), "openrouter/claude-opus-4.7  ❯  think:max  ❯  95%");
-	const compact = "claude-opus-4.7 ❯ think:max ❯ 95%";
+	assert.equal(layoutFooter(input, [], 100), "openrouter/claude-opus-4.7  ❯  max  ❯  95%");
+	const compact = "claude-opus-4.7 ❯ max ❯ 95%";
 	assert.equal(layoutFooter(input, [], visibleWidth(compact)), compact);
-	assert.equal(layoutFooter(input, [], 100), "openrouter/claude-opus-4.7  ❯  think:max  ❯  95%");
+	assert.equal(layoutFooter(input, [], 100), "openrouter/claude-opus-4.7  ❯  max  ❯  95%");
 });
 
 test("metrics yield whole before core values or extension badges and restore on resize", () => {
@@ -169,7 +169,7 @@ test("metrics yield whole before core values or extension badges and restore on 
 		}
 		if (width >= 40) {
 			assert.ok(rendered.includes("claude-opus-4.7"));
-			assert.match(rendered, /think:(medium|med)/);
+			assert.match(rendered, /(medium|med)/);
 			assert.ok(rendered.includes("12.0%"));
 		}
 	}
@@ -201,12 +201,12 @@ test("all 512 segment visibility combinations stay bounded with provider and col
 test("semantic colors survive layout and resizing restores full content", () => {
 	const core: FooterSegment[] = [
 		{ name: "model", text: "\x1b[36mmodel\x1b[39m" },
-		{ name: "thinking", text: "\x1b[35mthink:max\x1b[39m" },
+		{ name: "thinking", text: "\x1b[35mmax\x1b[39m" },
 		{ name: "context", text: "\x1b[31m95% / 1M\x1b[39m", alternatives: ["\x1b[31m95%\x1b[39m"] },
 	];
 	const wide = layoutFooter(core, [], 80);
 	const narrow = layoutFooter(core, [], 25);
-	assert.match(narrow, /\x1b\[35mthink:max/);
+	assert.match(narrow, /\x1b\[35mmax/);
 	assert.match(narrow, /\x1b\[31m95%/);
 	assert.equal(layoutFooter(core, [], 80), wide);
 });

@@ -6,7 +6,7 @@
 **Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, a live progress update, and any extension statuses visible in pi's footer.
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  Plan active  ❯  Queue: 2
+claude-opus-4.7  ❯  med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  Plan active  ❯  Queue: 2
 ```
 
 ![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-green.png)
@@ -106,7 +106,7 @@ Enable the optional `cwd` segment to distinguish projects and sessions:
 Or set startup segments with `PI_BAR_SHOW=model,thinking,context,cwd,progress,extensions`.
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  ~/projects/pi-bar
+claude-opus-4.7  ❯  med  ❯  2.6% / 1.0M  ❯  ~/projects/pi-bar
 ```
 
 Your home directory becomes `~`. Long paths omit middle directories, retaining trailing directory names where possible. The segment is capped at 36 terminal columns, including wide Unicode characters. Override the cap before starting pi:
@@ -148,7 +148,7 @@ Enable any of the optional metrics through `/bar` or the quick visibility comman
 ```
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  CH:84%  ❯  ≈$0.123  ❯  ↑12k ↓3k
+claude-opus-4.7  ❯  med  ❯  2.6% / 1.0M  ❯  CH:84%  ❯  ≈$0.123  ❯  ↑12k ↓3k
 ```
 
 | Segment | Meaning |
