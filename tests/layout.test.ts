@@ -22,10 +22,11 @@ test("status text is display-ready, sanitized, and filtered by original keys", (
 		["empty", "\x1b[31m \x1b[0m"],
 	]);
 	const seen = new Set<string>();
-	assert.deepEqual(formatExtensionStatuses(statuses, { mode: "all", hidden: new Set() }, seen), ["MCP: 2/2", "Plan active", "2"]);
+	const coloredMcp = `\x1b[0m${statuses.get("mcp")}\x1b[0m`;
+	assert.deepEqual(formatExtensionStatuses(statuses, { mode: "all", hidden: new Set() }, seen), [coloredMcp, "Plan active", "2"]);
 	assert.deepEqual([...seen], ["mcp", "plan-mode", "queue"]);
 	assert.deepEqual(formatExtensionStatuses(statuses, { mode: "all", hidden: new Set(["mcp"]) }, seen), ["Plan active", "2"]);
-	assert.deepEqual(formatExtensionStatuses(statuses, { mode: "only", shown: new Set(["mcp"]) }, seen), ["MCP: 2/2"]);
+	assert.deepEqual(formatExtensionStatuses(statuses, { mode: "only", shown: new Set(["mcp"]) }, seen), [coloredMcp]);
 	assert.equal(formatExtensionStatuses(statuses, { mode: "only", shown: new Set() }, seen), null);
 });
 

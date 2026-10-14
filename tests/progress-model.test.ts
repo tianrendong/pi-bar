@@ -78,7 +78,7 @@ function harness(initialModels = [gpt, haiku]) {
 	const ctx = {
 		cwd, mode: "tui", hasUI: true, model: mainModel,
 		getContextUsage: () => undefined,
-		sessionManager: { getEntries: () => [], getBranch: () => [] },
+		sessionManager: { getSessionId: () => "test-session", getLeafId: () => null, getEntries: () => [], getBranch: () => [] },
 		modelRegistry: {
 			getAvailable: () => { availabilityReads++; return models; },
 			getAll: () => [...models, model("unconfigured", "should-not-appear")],

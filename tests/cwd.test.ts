@@ -87,7 +87,7 @@ function harness(cwd: string, statuses = new Map<string, string>()) {
 		hasUI: true,
 		model: { id: "test-model" },
 		getContextUsage: () => undefined,
-		sessionManager: { getEntries: () => [], getBranch: () => [] },
+		sessionManager: { getSessionId: () => "test-session", getLeafId: () => null, getEntries: () => [], getBranch: () => [] },
 		ui: {
 			notify: () => {},
 			setFooter: (factory: Function | undefined) => {
@@ -154,11 +154,12 @@ test("footer uses display-ready badges, overflows whole statuses, and preserves 
 		["internal-plan-key", "Plan\nactive"],
 		["empty", "\x1b]0;title\x07"],
 	]);
+	const coloredMcp = `\x1b[0m${statuses.get("internal-mcp-key")}\x1b[0m`;
 	const first = harness("/project", statuses);
 	await first.start();
-	assert.equal(first.render(), "MCP: 2/2  ❯  Plan active");
-	assert.equal(first.render(23), "MCP: 2/2 ❯ Plan active");
-	assert.equal(first.render(14), "MCP: 2/2 ❯ +1");
+	assert.equal(first.render(), `${coloredMcp}  ❯  Plan active`);
+	assert.equal(first.render(23), `${coloredMcp} ❯ Plan active`);
+	assert.equal(first.render(14), `${coloredMcp} ❯ +1`);
 	assert.equal(first.render(8), "+2");
 	await first.command("status hide internal-mcp-key");
 	assert.equal(first.render(), "Plan active");
@@ -169,9 +170,9 @@ test("footer uses display-ready badges, overflows whole statuses, and preserves 
 	await reloaded.start();
 	assert.equal(reloaded.render(), "Plan active");
 	await reloaded.command("status show internal-mcp-key");
-	assert.equal(reloaded.render(), "MCP: 2/2  ❯  Plan active");
+	assert.equal(reloaded.render(), `${coloredMcp}  ❯  Plan active`);
 	statuses.set("internal-plan-key", "Plan done");
-	assert.equal(reloaded.render(), "MCP: 2/2  ❯  Plan done");
+	assert.equal(reloaded.render(), `${coloredMcp}  ❯  Plan done`);
 	await reloaded.command("segments none");
 	assert.equal(reloaded.render(), "");
 	await reloaded.shutdown();

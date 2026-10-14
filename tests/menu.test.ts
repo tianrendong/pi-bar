@@ -44,7 +44,7 @@ function harness(statuses = new Map<string, string>()) {
 		cwd: directory, mode: "tui", hasUI: true,
 		model: { provider: "test-provider", id: "test-model" },
 		getContextUsage: () => undefined,
-		sessionManager: { getEntries: () => [], getBranch: () => [] },
+		sessionManager: { getSessionId: () => "test-session", getLeafId: () => null, getEntries: () => [], getBranch: () => [] },
 		modelRegistry: { getAvailable: () => [] },
 		ui: {
 			notify: (message: string, type: string) => notifications.push({ message, type }),
@@ -211,6 +211,7 @@ test("badge submenu saves live, previews published text, and returns to settings
 	const prefs = { segments: ["extensions"], showProvider: true, progressModel: "auto" };
 	writeFileSync(config, JSON.stringify(prefs));
 	const statuses = new Map([["mcp", "\x1b[31mMCP ready\x1b[0m"], ["plan", "Plan active"]]);
+	const coloredMcp = `\x1b[0m${statuses.get("mcp")}\x1b[0m`;
 	const h = harness(statuses);
 	t.after(() => h.shutdown());
 	await h.start();
@@ -234,14 +235,14 @@ test("badge submenu saves live, previews published text, and returns to settings
 	h.input("mcp");
 	assert.match(h.uiText(), /Badge: mcp\s+hidden/);
 	h.input("\r");
-	assert.equal(h.render(), "MCP ready  ❯  Plan active");
+	assert.equal(h.render(), `${coloredMcp}  ❯  Plan active`);
 	h.input("\x1b");
 	await standalone;
 	await h.shutdown();
 	const reloaded = harness(statuses);
 	t.after(() => reloaded.shutdown());
 	await reloaded.start();
-	assert.equal(reloaded.render(), "MCP ready  ❯  Plan active");
+	assert.equal(reloaded.render(), `${coloredMcp}  ❯  Plan active`);
 });
 
 test("new badge defaults preserve existing choices, including badges discovered while settings are open", async (t) => {
