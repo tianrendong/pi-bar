@@ -33,6 +33,60 @@ test("wide layout preserves full segments and complete badges with roomy spacing
 	assert.equal(layoutFooter(segments, badges, 240), [...segments.slice(0, -1).map((s) => s.text), ...badges].join("  ❯  "));
 });
 
+test("fitting layouts never iterate compact alternatives", () => {
+	let alternativeIterations = 0;
+	const alternatives = new Proxy(["short"], {
+		get(target, key, receiver) {
+			if (key === Symbol.iterator) alternativeIterations++;
+			return Reflect.get(target, key, receiver);
+		},
+	});
+	const input: FooterSegment[] = [
+		{ name: "model", text: "full-model-name", alternatives },
+		{ name: "progress", text: "Reviewing tests" },
+		{ name: "extensions", text: "" },
+	];
+	assert.equal(layoutFooter(input, ["Ready"], 100), "full-model-name  ❯  Reviewing tests  ❯  Ready");
+	assert.equal(alternativeIterations, 0, "wide layouts must skip compaction and restoration work");
+});
+
+test("exact-fit and fractional widths preserve complete Unicode and ANSI styling", () => {
+	const color = (text: string) => `\x1b[1;48;2;20;30;40;38;2;120;80;200m${text}\x1b[0m`;
+	const divider = "\x1b[2m❯\x1b[22m";
+	const input: FooterSegment[] = [
+		{ name: "model", text: color("模型👩‍💻"), alternatives: [color("模型")] },
+		{ name: "thinking", text: "" },
+		{ name: "progress", text: color("e\u0301 reviewing") },
+		{ name: "extensions", text: "replaced by badges" },
+	];
+	const coloredBadges = [color("缓存 90%"), color("👩‍💻 ready")];
+	const expected = [input[0].text, input[2].text, ...coloredBadges].join(`  ${divider}  `);
+	const width = visibleWidth(expected);
+	for (const columns of [width, width + 0.9, width + 40]) {
+		assert.equal(layoutFooter(input, coloredBadges, columns, divider), expected);
+	}
+	assert.ok(visibleWidth(layoutFooter(input, coloredBadges, width - 0.1, divider)) <= width - 1);
+	assert.equal(input[3].text, "replaced by badges", "layout must not mutate input segments");
+});
+
+test("invalid and sub-column widths stay empty even for zero-width styles", () => {
+	for (const width of [NaN, Infinity, -Infinity, -1, 0, Number.MIN_VALUE, 0.9]) {
+		assert.equal(layoutFooter([{ name: "model", text: "\x1b[31m" }], [], width), "");
+	}
+});
+
+test("wide layouts observe in-place changes to text, badges, styles, and dividers", () => {
+	const input: FooterSegment[] = [{ name: "model", text: "model" }, { name: "extensions", text: "" }];
+	const liveBadges = ["Ready"];
+	assert.equal(layoutFooter(input, liveBadges, 100), "model  ❯  Ready");
+	input[0].text = "\x1b[32mnew model\x1b[39m";
+	liveBadges[0] = "Done";
+	liveBadges.push("Queue: 2");
+	assert.equal(layoutFooter(input, liveBadges, 100, "|"), "\x1b[32mnew model\x1b[39m  |  Done  |  Queue: 2");
+	assert.ok(visibleWidth(layoutFooter(input, liveBadges, 15, "|")) <= 15);
+	assert.equal(layoutFooter(input, liveBadges, 100), "\x1b[32mnew model\x1b[39m  ❯  Done  ❯  Queue: 2");
+});
+
 test("screenshot layout uses two-space gaps, tightening only under width pressure", () => {
 	const input: FooterSegment[] = [
 		{ name: "model", text: "gpt-6-astra" },
