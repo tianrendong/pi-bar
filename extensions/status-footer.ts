@@ -613,6 +613,7 @@ function tailText(text: string, maxChars: number): string {
 }
 
 function compactText(text: string): string {
+	if (typeof text !== "string") return "";
 	return text.replace(ANSI_PATTERN, "").replace(/\s+/g, " ").trim();
 }
 
@@ -749,6 +750,16 @@ function extractTextContent(content: readonly unknown[] | undefined): string | u
 	return compacted.length > 0 ? compacted : undefined;
 }
 
+function customMessageText(message: unknown): string | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const record = message as Record<string, unknown>;
+	if (typeof record.content === "string") {
+		const compacted = compactText(record.content);
+		return compacted.length > 0 ? compacted : undefined;
+	}
+	return extractTextContent(record.content as readonly unknown[] | undefined);
+}
+
 class ProgressFactCollector {
 	private nextIndex = 1;
 	private readonly activities: ProgressActivity[] = [];
@@ -763,6 +774,18 @@ class ProgressFactCollector {
 			"user_message",
 			"immediate",
 			`user: ${truncateText(compactText(prompt), MAX_USER_TEXT_CHARS)}`,
+		);
+	}
+
+	recordCustomMessage(message: unknown): ProgressActivity | undefined {
+		const text = customMessageText(message);
+		if (!text) return undefined;
+		const record = (message ?? {}) as { customType?: unknown };
+		const customType = typeof record.customType === "string" ? record.customType : "custom";
+		return this.addActivity(
+			"user_message",
+			"immediate",
+			`custom (${customType}): ${truncateText(text, MAX_USER_TEXT_CHARS)}`,
 		);
 	}
 
@@ -957,7 +980,7 @@ class FooterProgressEngine {
 		this.startFreshRun();
 	}
 
-	recordUserMessage(ctx: ExtensionContext, prompt: string): void {
+	beginUserTurn(ctx: ExtensionContext): void {
 		// A new user turn replaces the entire visible progress update context, so wipe both
 		// the rendered text and the prior-turn checkpoint context that feeds the
 		// model. Carrying old checkpoints biased the next turn's phrasing toward
@@ -967,7 +990,22 @@ class FooterProgressEngine {
 		this.acceptedCheckpoints.splice(0);
 		this.latestAcceptedActivityIndex = 0;
 		this.requestRender();
+	}
+
+	recordUserMessage(ctx: ExtensionContext, prompt: string): void {
+		this.beginUserTurn(ctx);
 		this.enqueue(ctx, this.facts.recordUserMessage(prompt));
+	}
+
+	// Custom messages (e.g. subagent results handed back to the main session via
+	// sendMessage with triggerTurn) also start a run, so reset progress the same
+	// way a user turn does. A text-less custom message (empty or image-only
+	// content) still resets the turn — a blank footer is preferable to stale
+	// progress from the previous run — it just records no activity.
+	recordCustomMessage(ctx: ExtensionContext, message: unknown): void {
+		this.beginUserTurn(ctx);
+		const activity = this.facts.recordCustomMessage(message);
+		if (activity) this.enqueue(ctx, activity);
 	}
 
 	recordAssistantUpdate(ctx: ExtensionContext, message: unknown): void {
@@ -2465,7 +2503,23 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", async (_event, ctx) => { syncUsage(ctx); refresh(); });
 	pi.on("session_compact", async (_event, ctx) => { syncUsage(ctx); refresh(); });
 	pi.on("before_agent_start", async (event, ctx) => {
-		if (visibleSegments.includes("progress")) progress.recordUserMessage(ctx, event.prompt);
+		if (!visibleSegments.includes("progress")) return;
+		// Newer pi versions fire before_agent_start as a discriminated union: runs
+		// started via sendMessage(..., { triggerTurn: true }) (e.g. subagent results
+		// handed back to the main session) carry a custom `message` instead of a
+		// `prompt`. Handle both shapes so custom-message runs do not crash.
+		const record = event as unknown as { messageType?: unknown; message?: unknown; prompt?: string };
+		if (record.messageType === "custom") {
+			progress.recordCustomMessage(ctx, record.message);
+			return;
+		}
+		if (typeof record.prompt === "string") {
+			progress.recordUserMessage(ctx, record.prompt);
+			return;
+		}
+		// Future event variants without a prompt still start a fresh run; they just
+		// have no user text to record.
+		progress.beginUserTurn(ctx);
 	});
 	pi.on("message_update", async (event, ctx) => {
 		if (visibleSegments.includes("progress")) progress.recordAssistantUpdate(ctx, event.message);
