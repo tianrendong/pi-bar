@@ -613,7 +613,7 @@ function tailText(text: string, maxChars: number): string {
 }
 
 function compactText(text: string): string {
-	return text.replace(ANSI_PATTERN, "").replace(/\s+/g, " ").trim();
+	return text ? text.replace(ANSI_PATTERN, "").replace(/\s+/g, " ").trim(): "";
 }
 
 function compactValue(value: unknown, maxChars: number): string | undefined {
