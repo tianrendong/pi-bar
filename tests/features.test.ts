@@ -307,9 +307,10 @@ async function waitFor(check: () => boolean) {
 	assert.ok(check(), "asynchronous progress callback did not finish");
 }
 
-function fakeProgressProvider(h: ReturnType<typeof harness>) {
+function fakeProgressProvider(h: ReturnType<typeof harness>, requests?: unknown[]) {
 	const pending: Array<(stopReason?: "stop" | "error" | "aborted") => void> = [];
-	const stream = () => {
+	const stream = (_model: unknown, context: unknown) => {
+		if (requests) requests.push(context);
 		const events = createAssistantMessageEventStream();
 		pending.push((stopReason = "stop") => {
 			const response = assistant(makeUsage({ input: 80, cacheRead: 20, output: 10, cost: 0.005 }), { stopReason });
@@ -374,6 +375,59 @@ test("failed and aborted progress calls still count their reported usage", async
 		await waitFor(() => h.entries().length === index + 1);
 		assert.equal(h.render(), `≈$${(0.005 * (index + 1)).toFixed(3)}  ❯  ↑${100 * (index + 1)} ↓${10 * (index + 1)}`);
 	}
+});
+
+test("custom before_agent_start events (subagent handoffs) record progress without a prompt", async (t) => {
+	process.env.PI_BAR_SHOW = "cost,tokens,progress";
+	const h = harness();
+	const requests: unknown[] = [];
+	const pending = fakeProgressProvider(h, requests);
+	t.after(async () => { await h.shutdown(); unregisterApiProviders("pi-bar-tests"); });
+	await h.start();
+	// Newer pi fires before_agent_start with messageType "custom" (carrying a message,
+	// no prompt) when sendMessage(..., { triggerTurn: true }) starts a run — e.g. a
+	// subagent result handed back to the main session. This must not throw and must
+	// still trigger a progress request that includes the custom message text.
+	await h.emit("before_agent_start", {
+		messageType: "custom",
+		message: { customType: "subagent_result", content: "Subagent finished: edited 3 files", display: true },
+	});
+	await waitFor(() => pending.length === 1);
+	assert.match(JSON.stringify(requests.at(-1)), /custom \(subagent_result\): Subagent finished: edited 3 files/);
+	pending.shift()!("stop");
+
+	// Array-shaped content parts are extracted too.
+	await h.emit("before_agent_start", {
+		messageType: "custom",
+		message: { customType: "subagent_result", content: [{ type: "text", text: "Array content result" }], display: true },
+	});
+	await waitFor(() => pending.length === 1);
+	assert.match(JSON.stringify(requests.at(-1)), /custom \(subagent_result\): Array content result/);
+	pending.shift()!("stop");
+	await waitFor(() => h.render().includes("Reviewing footer metrics"));
+
+	// A text-less custom message (image-only content) resets the turn but sends no
+	// progress request.
+	await h.emit("before_agent_start", {
+		messageType: "custom",
+		message: { customType: "subagent_result", content: [{ type: "image", data: "aGk=", mimeType: "image/png" }], display: true },
+	});
+	for (let tick = 0; tick < 10; tick++) await nextTick();
+	assert.equal(pending.length, 0);
+	assert.doesNotMatch(h.render(), /Reviewing footer metrics/, "text-less custom messages clear the previous run's progress");
+
+	// Unknown future event variants without a prompt also reset the turn without
+	// recording an empty user activity or requesting progress.
+	await h.emit("before_agent_start", { messageType: "other" });
+	for (let tick = 0; tick < 10; tick++) await nextTick();
+	assert.equal(pending.length, 0);
+
+	// A following user prompt still records normally.
+	await h.emit("before_agent_start", { prompt: "Follow-up request" });
+	await waitFor(() => pending.length === 1);
+	pending.shift()!("stop");
+	await nextTick();
+	assert.doesNotMatch(h.render(), /undefined|NaN/);
 });
 
 test("late progress responses cannot write into a replacement session", async (t) => {
