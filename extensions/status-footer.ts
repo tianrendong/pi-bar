@@ -273,7 +273,7 @@ export function layoutFooter(
 	width: number,
 	divider = SEGMENT_SEPARATOR,
 ): string {
-	if (!Number.isFinite(width) || width <= 0) return "";
+	if (!Number.isFinite(width) || width < 1) return "";
 	width = Math.floor(width);
 	let separator = `  ${divider}  `;
 	const items = segments.map((segment) => ({ ...segment }));
@@ -286,7 +286,19 @@ export function layoutFooter(
 	};
 	updateBadges();
 	const line = () => items.map((item) => item.text).filter(Boolean).join(separator);
-	const overflow = () => visibleWidth(line()) - width;
+	let measuredLine = line();
+	let measuredWidth = visibleWidth(measuredLine);
+	// Most redraws fit unchanged: skip compaction, restoration, and truncation.
+	if (measuredWidth <= width) return measuredLine;
+	// Cache only within this layout call; text and separator changes invalidate it.
+	const overflow = () => {
+		const nextLine = line();
+		if (nextLine !== measuredLine) {
+			measuredLine = nextLine;
+			measuredWidth = visibleWidth(nextLine);
+		}
+		return measuredWidth - width;
+	};
 	const progress = items.find((item) => item.name === "progress");
 	if (progress && overflow() > 0) {
 		const currentWidth = visibleWidth(progress.text);
@@ -349,7 +361,7 @@ export function layoutFooter(
 		}
 	}
 	// A terminal narrower than thinking + context cannot show every core value.
-	return truncateToWidth(line(), width, "…");
+	return overflow() <= 0 ? measuredLine : truncateToWidth(measuredLine, width, "…");
 }
 
 function thinkingColor(level: string): ThemeColor {
